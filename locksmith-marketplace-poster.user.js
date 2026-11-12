@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Locksmith Marketplace Poster (Standalone)
 // @namespace    https://locksmith-marketplace-poster.local
-// @version      1.1.1
+// @version      1.1.2
 // @description  Standalone Facebook Marketplace auto-listing panel for locksmith services. No server needed: listings, variation, schedule and queue all live in Tampermonkey storage; photos can be uploaded from your computer (stored in the browser) or given as image links. Fill-only dry-run mode included for safe live testing.
 // @author       Shariful Islam
 // @match        https://www.facebook.com/marketplace/*
@@ -14,7 +14,7 @@
 // @run-at       document-idle
 // ==/UserScript==
 /*
- * Locksmith Marketplace Poster — STANDALONE v1.1.1
+ * Locksmith Marketplace Poster — STANDALONE v1.1.2
  * -------------------------------------------------
  * Built for hammadsolomon (Fiverr order FO5234353C085, $200 one-time).
  * Requirements covered:
@@ -38,6 +38,12 @@
  *    name/id and nearby label text (scored, best match wins), never
  *    matches the script's own panel, expands "More details" before
  *    searching, and logs field diagnostics when a field is missing.
+ *  - v1.1.2 fixes location selection from the live DOM the user sent
+ *    (ul[role="listbox"] of li[role="option"] rows, first row = the
+ *    city): after typing, the script waits for the listbox, clicks the
+ *    FIRST suggestion row with a full pointer/mouse sequence, verifies
+ *    the listbox closed, and falls back to a plain click, then to
+ *    ArrowDown + Enter.
  *
  * LIVE-TEST STATUS: local syntax + logic tests pass. Facebook form
  * selectors have NOT been verified against a live logged-in Marketplace
@@ -755,6 +761,52 @@ async function selectFromDropdown(labels, optionText, fieldName) {
   return true;
 }
 
+/* Location suggestions: a ul[role="listbox"] whose rows are
+ * li[role="option"], each nesting a second role="option" div (the row
+ * Facebook's typeahead listens on). First row = the city itself
+ * ("Tampa, Florida" / City), later rows are neighbourhoods/places. */
+function locationListbox() {
+  const boxes = Array.from(document.querySelectorAll('[role="listbox"]'))
+    .filter(b => !inPanel(b) && visible(b));
+  return boxes[0] || null;
+}
+function firstLocationOption() {
+  const box = locationListbox();
+  if (!box) return null;
+  const items = Array.from(box.querySelectorAll('li[role="option"]')).filter(o => visible(o));
+  if (items.length) return items[0];
+  const any = Array.from(box.querySelectorAll('[role="option"]')).filter(o => visible(o));
+  return any[0] || null;
+}
+function optionTitle(opt) {
+  try {
+    const span = opt.querySelector('span[dir="auto"]');
+    if (span) return allText(span);
+  } catch (e) {}
+  return allText(opt).slice(0, 60);
+}
+async function clickOptionRow(opt) {
+  let target = opt;
+  try {
+    const inner = opt.querySelector('[role="option"]');
+    if (inner && inner !== opt) target = inner;
+  } catch (e) {}
+  const PE = (typeof PointerEvent !== 'undefined') ? PointerEvent : MouseEvent;
+  const ME = (typeof MouseEvent !== 'undefined') ? MouseEvent : Event;
+  let rect = { left: 0, top: 0, width: 0, height: 0 };
+  try { rect = target.getBoundingClientRect() || rect; } catch (e) {}
+  const x = rect.left + rect.width / 2, y = rect.top + rect.height / 2;
+  const seq = [['pointerdown', PE], ['mousedown', ME], ['pointerup', PE], ['mouseup', ME], ['click', ME]];
+  for (const pair of seq) {
+    try {
+      target.dispatchEvent(new pair[1](pair[0], { bubbles: true, cancelable: true, clientX: x, clientY: y, button: 0 }));
+    } catch (e) {
+      try { target.dispatchEvent(new Event(pair[0], { bubbles: true })); } catch (e2) {}
+    }
+    await sleep(60);
+  }
+  return target;
+}
 async function setLocation(cityText, settings) {
   if (!cityText) return true;
   const el = await waitFor(() => findInputByLabels(['location', 'item location', 'where are you located']), 10000);
@@ -762,13 +814,38 @@ async function setLocation(cityText, settings) {
   await humanType(el, cityText, settings);
   await randDelay(1200, 2000);
   const cityShort = cityText.split(',')[0].trim().toLowerCase();
-  const suggestion = await waitFor(() => {
-    const opts = Array.from(document.querySelectorAll('[role="option"], li, div[role="button"]'));
-    return opts.find(o => visible(o) && allText(o).toLowerCase().includes(cityShort)) || null;
-  }, 6000);
-  if (suggestion) { suggestion.click(); await randDelay(500, 900); addLog('Location set: ' + cityText); return true; }
-  el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
-  addLog('Location typed, no suggestion clicked: ' + cityText, 'warn');
+  const first = await waitFor(() => firstLocationOption(), 8000);
+  if (first) {
+    const title = optionTitle(first);
+    addLog('Location suggestions open — clicking first: ' + title);
+    await clickOptionRow(first);
+    await sleep(1200);
+    const val = String(el.value || el.textContent || '').toLowerCase();
+    if (!locationListbox() || val.includes(cityShort)) {
+      addLog('Location set: ' + title + ' (for ' + cityText + ')');
+      return true;
+    }
+    try { first.click(); } catch (e) {}
+    await sleep(1000);
+    if (!locationListbox()) {
+      addLog('Location set: ' + title + ' (for ' + cityText + ')');
+      return true;
+    }
+    addLog('Location suggestion click did not take — trying keyboard select.', 'warn');
+  } else {
+    addLog('No location suggestions appeared for: ' + cityText, 'warn');
+  }
+  try { el.focus(); } catch (e) {}
+  el.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true }));
+  await sleep(400);
+  el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+  await sleep(800);
+  const val2 = String(el.value || el.textContent || '').toLowerCase();
+  if (val2.includes(cityShort) || !locationListbox()) {
+    addLog('Location set via keyboard: ' + cityText);
+    return true;
+  }
+  addLog('Location typed, no suggestion confirmed: ' + cityText + ' — check it on screen.', 'warn');
   return true;
 }
 
@@ -1081,7 +1158,7 @@ function buildPanel() {
   panel.id = 'lmp-panel';
   panel.innerHTML =
     '<div id="lmp-head"><h1>🔑 Locksmith Marketplace Poster</h1>' +
-    '<p>Standalone v1.1.1 &nbsp;•&nbsp; No server &nbsp;•&nbsp; Account: this Chrome profile\'s logged-in Facebook account</p></div>' +
+    '<p>Standalone v1.1.2 &nbsp;•&nbsp; No server &nbsp;•&nbsp; Account: this Chrome profile\'s logged-in Facebook account</p></div>' +
     '<div class="lmp-tabs">' +
     '<button class="lmp-tab" data-tab="listings">Listings</button>' +
     '<button class="lmp-tab" data-tab="queue">Queue</button>' +
@@ -1403,7 +1480,7 @@ function boot() {
   try { if (window.top !== window.self) return; } catch (e) { return; }
   buildPanel();
   refreshPhotoCounts();
-  addLog('Locksmith Poster ready (standalone v1.1.1). ' +
+  addLog('Locksmith Poster ready (standalone v1.1.2). ' +
     (loadSettings().autoPublish ? 'Mode: Fill + Publish.' : 'Mode: Fill-only dry-run — safe to test.'));
   const q = loadQueue();
   if (q.running && q.items.length && q.index < q.items.length) {
@@ -1415,10 +1492,10 @@ function boot() {
 // Debug/test handle (read-only helpers + state). Harmless in production.
 try {
   window.LMP = {
-    version: '1.1.1', spinText, applyTokens, renderListing, pickPrice,
+    version: '1.1.2', spinText, applyTokens, renderListing, pickPrice,
     seedListings, loadListings, loadSettings, CITIES, ALL_SERVICES,
     photoStoreAvailable, resolveListingPhotoFiles, getStoredPhotos, storePhotos,
-    findInputByLabels, humanType, setEditableText, logFieldDiagnostics
+    findInputByLabels, humanType, setEditableText, logFieldDiagnostics, setLocation
   };
 } catch (e) {}
 

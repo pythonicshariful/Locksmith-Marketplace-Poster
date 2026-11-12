@@ -1,6 +1,6 @@
 # Locksmith Marketplace Poster — Standalone (Tampermonkey)
 
-**Version 1.1.1 — for hammadsolomon (Fiverr order FO5234353C085)**
+**Version 1.1.2 — for hammadsolomon (Fiverr order FO5234353C085)**
 
 A standalone Tampermonkey userscript that fills and posts Facebook Marketplace
 listings for locksmith services from a side panel. **No server, no Python, no
@@ -8,14 +8,18 @@ Flask.** Listings, settings, queue and variation history all live in
 Tampermonkey storage in the browser.
 
 > **Live-test status: FIRST LIVE TEST DONE Nov 12 — FIELDS FAILED, FIXED
-> IN v1.1.1, RETEST PENDING.** The first live run (v1.1.0) reported
-> "Field not found: Description" and left Title/Price empty — the
-> finder only looked for plain inputs/textareas, while Facebook's
-> Description is a rich-text (Lexical) editor. v1.1.1 matches
-> contenteditable editors, aria-labelledby, name/id and nearby labels,
-> expands "More details", and logs field diagnostics. The fix is
-> harness-tested but **not yet re-verified live** — run the Fill-only
-> dry-run (Step 3 below) and check the Log tab before auto-publish.
+> IN v1.1.1, LOCATION FIXED IN v1.1.2, RETEST PENDING.** The first live
+> run (v1.1.0) reported "Field not found: Description" and left
+> Title/Price empty — the finder only looked for plain inputs/textareas,
+> while Facebook's Description is a rich-text (Lexical) editor. v1.1.1
+> matches contenteditable editors, aria-labelledby, name/id and nearby
+> labels, expands "More details", and logs field diagnostics. v1.1.2
+> fixes location from the live listbox DOM: after typing, it clicks the
+> FIRST suggestion row (the city itself) with a full pointer/mouse
+> sequence, verifies the listbox closed, and falls back to ArrowDown +
+> Enter. Fixes are harness-tested but **not yet re-verified live** — run
+> the Fill-only dry-run (Step 3 below) and check the Log tab before
+> auto-publish.
 
 ## What it does
 
@@ -167,7 +171,7 @@ selectors. Instead, do one of these on the create page:
 
 ## What was tested (Nov 12, 2026)
 
-- `node --check` — syntax OK (1,428 lines, ~75 KB).
+- `node --check` — syntax OK (1,505 lines, ~79 KB).
 - Logic harness (19 checks, all pass): 10 seed listings, 40 services,
   7 cities, spintax variation, token replacement, price within range
   and rounded to $5, used-combination avoidance, safe defaults
@@ -180,17 +184,23 @@ selectors. Instead, do one of these on the create page:
   placeholder, Price via aria-labelledby, Description as the
   contenteditable editor; panel/header fields excluded; input typing
   sets + verifies value; editable path inserts via execCommand.
+- Location harness (7 checks, all pass, fake DOM built from the live
+  listbox HTML): first suggestion row ("Tampa, Florida" / City) gets
+  the full pointer/mouse sequence, second row untouched, listbox
+  closes, input value becomes the selected place; no-listbox case
+  falls back to ArrowDown + Enter.
 - Panel smoke test (fake DOM): script boots without errors, listings
   render with names, NO PHOTOS badges, uploaded/link counts and queue
   button after the async photo-count refresh.
 - **Live:** v1.1.0 first live test Nov 12 FAILED on fields (Description
   not found, Title/Price empty; photo preview did appear, suggesting
-  attach worked). v1.1.1 fixes are harness-tested only — live
-  re-verification of fill, attach, Publish and Renew is still open
-  (Step 3 above). Photo copy/delete on Duplicate/Delete share the
-  tested IndexedDB patterns but were not individually harness-tested.
+  attach worked). v1.1.1/v1.1.2 fixes are harness-tested only — live
+  re-verification of fill, location selection, attach, Publish and
+  Renew is still open (Step 3 above). Photo copy/delete on
+  Duplicate/Delete share the tested IndexedDB patterns but were not
+  individually harness-tested.
 
 ## Files
 
-- `locksmith-marketplace-poster.user.js` — the script (v1.1.1).
+- `locksmith-marketplace-poster.user.js` — the script (v1.1.2).
 - `README.md` — this file.
