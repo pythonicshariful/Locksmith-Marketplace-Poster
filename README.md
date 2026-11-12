@@ -1,18 +1,21 @@
 # Locksmith Marketplace Poster — Standalone (Tampermonkey)
 
-**Version 1.1.0 — for hammadsolomon (Fiverr order FO5234353C085)**
+**Version 1.1.1 — for hammadsolomon (Fiverr order FO5234353C085)**
 
 A standalone Tampermonkey userscript that fills and posts Facebook Marketplace
 listings for locksmith services from a side panel. **No server, no Python, no
 Flask.** Listings, settings, queue and variation history all live in
 Tampermonkey storage in the browser.
 
-> **Live-test status: LOCAL TESTS PASS, LIVE CHECK PENDING.** Syntax,
-> spintax/variation, price, dedup and panel-render tests all pass locally
-> (see "What was tested" below). The Facebook form selectors have **not**
-> yet been verified against a live logged-in Marketplace create page.
-> Always run the Fill-only dry-run first (Step 3 below) with your own
-> account before turning on auto-publish or sending this to the client.
+> **Live-test status: FIRST LIVE TEST DONE Nov 12 — FIELDS FAILED, FIXED
+> IN v1.1.1, RETEST PENDING.** The first live run (v1.1.0) reported
+> "Field not found: Description" and left Title/Price empty — the
+> finder only looked for plain inputs/textareas, while Facebook's
+> Description is a rich-text (Lexical) editor. v1.1.1 matches
+> contenteditable editors, aria-labelledby, name/id and nearby labels,
+> expands "More details", and logs field diagnostics. The fix is
+> harness-tested but **not yet re-verified live** — run the Fill-only
+> dry-run (Step 3 below) and check the Log tab before auto-publish.
 
 ## What it does
 
@@ -123,6 +126,33 @@ Facebook before publishing.
   downloads; the Log will show which photo failed. Use a host that
   serves direct files, upload the photo instead, or add photos by hand.
 
+## If a field still won't fill — send diagnostics, not view-source
+
+View-source (`view-source:`) does **not** contain the rendered form —
+Facebook builds it with JavaScript, so that file is useless for fixing
+selectors. Instead, do one of these on the create page:
+
+1. **Easiest:** open the panel's **Log** tab after a Fill-only run and
+   screenshot the "Form diagnostics" lines (they list every visible
+   field's tag/labels — no values are logged).
+2. **Most precise:** press F12 → Console → paste the snippet below
+   (Chrome may ask you to type `allow pasting` first). It copies a
+   field list to your clipboard — no field values, no tokens, structure
+   only. Paste the result back.
+
+```js
+(function(){
+  const out=[];
+  document.querySelectorAll('input,textarea,[contenteditable="true"],[role="textbox"],[role="combobox"]').forEach(el=>{
+    if(el.closest('#lmp-panel'))return;
+    const r=el.getBoundingClientRect();
+    out.push({tag:el.tagName.toLowerCase(),type:el.type||'',role:el.getAttribute('role')||'',aria:el.getAttribute('aria-label')||'',labelledby:el.getAttribute('aria-labelledby')||'',ph:el.getAttribute('placeholder')||'',testid:el.getAttribute('data-testid')||'',ce:el.isContentEditable,vis:r.width>0&&r.height>0,hasVal:!!(el.value||el.textContent||'').trim()});
+  });
+  console.table(out); copy(JSON.stringify(out,null,1));
+  console.log('Copied '+out.length+' fields. Paste into chat.');
+})();
+```
+
 ## Troubleshooting
 
 | Symptom | Check |
@@ -137,27 +167,30 @@ Facebook before publishing.
 
 ## What was tested (Nov 12, 2026)
 
-- `node --check` — syntax OK (1,251 lines, ~68 KB).
+- `node --check` — syntax OK (1,428 lines, ~75 KB).
 - Logic harness (19 checks, all pass): 10 seed listings, 40 services,
-  7 cities, spintax variation (15 unique title/description combos in
-  40 renders of one template), token replacement, price within range
+  7 cities, spintax variation, token replacement, price within range
   and rounded to $5, used-combination avoidance, safe defaults
   (auto-publish OFF, interval 180–300s), plus photo-resolution soft
   failure without IndexedDB (empty result, no throw).
 - Fake-IndexedDB harness (7 checks, all pass): store 2 photos, non-image
   filtered out, read-back with names, resolve to File objects with
   names/types preserved.
+- Fill harness (10 checks, all pass): scored finder picks Title by
+  placeholder, Price via aria-labelledby, Description as the
+  contenteditable editor; panel/header fields excluded; input typing
+  sets + verifies value; editable path inserts via execCommand.
 - Panel smoke test (fake DOM): script boots without errors, listings
   render with names, NO PHOTOS badges, uploaded/link counts and queue
   button after the async photo-count refresh.
-- **Not tested:** live logged-in Facebook Marketplace create/selling
-  pages, real photo upload/attach on Facebook, real photo download
-  from a live host, real Publish, real Renew. Those need Shariful's
-  own-account live test (Step 3 above). Photo copy/delete on
-  Duplicate/Delete share the tested IndexedDB patterns but were not
-  individually harness-tested.
+- **Live:** v1.1.0 first live test Nov 12 FAILED on fields (Description
+  not found, Title/Price empty; photo preview did appear, suggesting
+  attach worked). v1.1.1 fixes are harness-tested only — live
+  re-verification of fill, attach, Publish and Renew is still open
+  (Step 3 above). Photo copy/delete on Duplicate/Delete share the
+  tested IndexedDB patterns but were not individually harness-tested.
 
 ## Files
 
-- `locksmith-marketplace-poster.user.js` — the script (v1.1.0).
+- `locksmith-marketplace-poster.user.js` — the script (v1.1.1).
 - `README.md` — this file.

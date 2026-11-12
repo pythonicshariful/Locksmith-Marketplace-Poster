@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Locksmith Marketplace Poster (Standalone)
 // @namespace    https://locksmith-marketplace-poster.local
-// @version      1.1.0
+// @version      1.1.1
 // @description  Standalone Facebook Marketplace auto-listing panel for locksmith services. No server needed: listings, variation, schedule and queue all live in Tampermonkey storage; photos can be uploaded from your computer (stored in the browser) or given as image links. Fill-only dry-run mode included for safe live testing.
 // @author       Shariful Islam
 // @match        https://www.facebook.com/marketplace/*
@@ -14,7 +14,7 @@
 // @run-at       document-idle
 // ==/UserScript==
 /*
- * Locksmith Marketplace Poster — STANDALONE v1.1.0
+ * Locksmith Marketplace Poster — STANDALONE v1.1.1
  * -------------------------------------------------
  * Built for hammadsolomon (Fiverr order FO5234353C085, $200 one-time).
  * Requirements covered:
@@ -32,6 +32,12 @@
  *  - Multiple accounts = multiple Chrome profiles, one install per profile.
  *    This script never switches Facebook accounts itself.
  *  - v1.1.0 adds photo upload (IndexedDB). v1.0.0 was links-only.
+ *  - v1.1.1 fixes live field-finding after the Nov 12 live test reported
+ *    "Field not found: Description" with empty Title/Price: the finder
+ *    now also matches contenteditable / Lexical editors, aria-labelledby,
+ *    name/id and nearby label text (scored, best match wins), never
+ *    matches the script's own panel, expands "More details" before
+ *    searching, and logs field diagnostics when a field is missing.
  *
  * LIVE-TEST STATUS: local syntax + logic tests pass. Facebook form
  * selectors have NOT been verified against a live logged-in Marketplace
@@ -487,16 +493,68 @@ function visible(el) {
 }
 function allText(el) { return (el.textContent || '').trim().replace(/\s+/g, ' '); }
 
+function inPanel(el) {
+  try { return !!(el && el.closest && el.closest('#lmp-panel, #lmp-toggle')); } catch (e) { return false; }
+}
+
 function setReactValue(el, value) {
-  const proto = el.tagName === 'TEXTAREA'
-    ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
-  const desc = Object.getOwnPropertyDescriptor(proto, 'value');
+  let proto = null;
+  try {
+    proto = el.tagName === 'TEXTAREA'
+      ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
+  } catch (e) { proto = null; }
+  const desc = proto ? Object.getOwnPropertyDescriptor(proto, 'value') : null;
   if (desc && desc.set) desc.set.call(el, value); else el.value = value;
   el.dispatchEvent(new Event('input', { bubbles: true }));
   el.dispatchEvent(new Event('change', { bubbles: true }));
 }
 
+/* Fill a contenteditable (Lexical) editor: React/Lexical state only
+ * updates when text goes through the editing pipeline, so plain
+ * textContent assignment is not enough. insertText via execCommand is
+ * the path Chrome + Lexical both honour. Falls back to textContent +
+ * input events when execCommand is unavailable. */
+async function setEditableText(el, text, settings) {
+  try { el.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch (e) {}
+  await randDelay(150, 400);
+  el.focus();
+  try { el.click(); } catch (e) {}
+  await randDelay(80, 200);
+  const doc = el.ownerDocument || document;
+  let usedExec = false;
+  try {
+    if (doc.execCommand) {
+      doc.execCommand('selectAll', false, null);
+      doc.execCommand('delete', false, null);
+      // Insert in word-ish chunks so the editor sees realistic edits.
+      const chunks = String(text).match(/[^ ]+ ?/g) || [String(text)];
+      for (const chunk of chunks) {
+        if (!doc.execCommand('insertText', false, chunk)) break;
+        usedExec = true;
+        await randDelay(settings.typingMsMin, settings.typingMsMax + 60);
+      }
+    }
+  } catch (e) { usedExec = false; }
+  if (!usedExec) {
+    try { el.textContent = text; } catch (e) {}
+    try { el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text })); } catch (e) {
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+  } else {
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+  el.dispatchEvent(new Event('blur', { bubbles: true }));
+  return (el.textContent || '').includes(String(text).slice(0, 20));
+}
+
 async function humanType(el, text, settings) {
+  if (el.isContentEditable) {
+    const ok = await setEditableText(el, text, settings);
+    if (!ok) addLog('Editable field may not have updated — check it on screen.', 'warn');
+    return ok;
+  }
   try { el.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch (e) {}
   await randDelay(150, 400);
   el.focus();
@@ -513,36 +571,148 @@ async function humanType(el, text, settings) {
     await randDelay(ch === ' ' ? min + 40 : min, max + (ch === ' ' ? 90 : 0));
   }
   el.dispatchEvent(new Event('blur', { bubbles: true }));
+  if (String(el.value || '') !== String(text)) {
+    // One full-value retry: some Facebook inputs drop per-keystroke sets.
+    setReactValue(el, text);
+    await sleep(300);
+  }
+  if (String(el.value || '') !== String(text)) {
+    addLog('Field value did not stick after typing — check it on screen.', 'warn');
+    return false;
+  }
+  return true;
 }
 
-function findInputByLabels(labels) {
-  const inputs = Array.from(document.querySelectorAll('input[type="text"], input:not([type]), textarea'));
+/* Resolve every human-readable name an element may carry: aria-label,
+ * aria-labelledby targets, placeholder, name, title, label[for], and
+ * data-testid. Returns lowercase parts for scoring. */
+function fieldLabelText(el) {
+  const parts = { aria: '', labelledby: '', ph: '', name: '', testid: '', forLabel: '' };
+  try { parts.aria = (el.getAttribute('aria-label') || '').toLowerCase().trim(); } catch (e) {}
+  try {
+    const lb = el.getAttribute('aria-labelledby') || '';
+    if (lb) {
+      parts.labelledby = lb.split(/\s+/).map(id => {
+        try { const t = document.getElementById(id); return t ? allText(t) : ''; } catch (e) { return ''; }
+      }).join(' ').toLowerCase().trim();
+    }
+  } catch (e) {}
+  try { parts.ph = (el.getAttribute('placeholder') || '').toLowerCase().trim(); } catch (e) {}
+  try { parts.name = ((el.name || '') + ' ' + (el.id || '')).toLowerCase().trim(); } catch (e) {}
+  try { parts.testid = (el.getAttribute('data-testid') || '').toLowerCase().trim(); } catch (e) {}
+  try {
+    if (el.id) {
+      const lab = document.querySelector('label[for="' + el.id.replace(/"/g, '\\"') + '"]');
+      if (lab) parts.forLabel = allText(lab).toLowerCase();
+    }
+  } catch (e) {}
+  return parts;
+}
+/* Text of the nearest visible label-like element within 3 ancestors:
+ * covers Facebook's floating/adjacent labels with no aria wiring. */
+function nearbyLabelText(el) {
+  try {
+    let node = el;
+    for (let depth = 0; depth < 3 && node; depth++) {
+      node = node.parentElement;
+      if (!node) break;
+      const kids = node.querySelectorAll('label, span');
+      for (const k of kids) {
+        if (k === el || k.contains(el)) continue;
+        const t = allText(k).toLowerCase();
+        if (t && t.length <= 40) return t;
+      }
+    }
+  } catch (e) {}
+  return '';
+}
+function candidateFields() {
+  const els = Array.from(document.querySelectorAll(
+    'input, textarea, [contenteditable="true"], [role="textbox"]'));
+  return els.filter(el => {
+    if (inPanel(el) || !visible(el)) return false;
+    if (el.tagName === 'INPUT') {
+      const t = (el.type || '').toLowerCase();
+      if (['hidden', 'file', 'checkbox', 'radio', 'submit', 'button', 'range', 'color'].includes(t)) return false;
+    }
+    return true;
+  });
+}
+function scoreField(el, labels, preferEditable) {
+  const parts = fieldLabelText(el);
+  const near = nearbyLabelText(el);
+  let best = 0;
   for (const label of labels) {
     const want = label.toLowerCase();
-    for (const el of inputs) {
-      if (!visible(el)) continue;
-      const aria = (el.getAttribute('aria-label') || '').toLowerCase();
-      const ph = (el.getAttribute('placeholder') || '').toLowerCase();
-      const id = el.id ? (document.querySelector('label[for="' + id + '"]') || {}).textContent || '' : '';
-      if (aria === want || ph === want || aria.includes(want) || ph.includes(want)) return el;
-      const labelled = (id || '').toLowerCase();
-      if (labelled && labelled.includes(want)) return el;
-    }
-    // Label text sitting next to / above the field.
-    const spans = Array.from(document.querySelectorAll('label, span, div'));
-    for (const sp of spans) {
-      if (allText(sp).toLowerCase() !== want) continue;
-      const box = sp.closest('label') || sp.parentElement;
-      const inner = box ? box.querySelector('input, textarea') : null;
-      if (inner && visible(inner)) return inner;
-    }
+    let s = 0;
+    if (parts.aria === want) s = Math.max(s, 100);
+    if (parts.ph === want) s = Math.max(s, 90);
+    if (parts.labelledby === want || parts.forLabel === want) s = Math.max(s, 85);
+    if (near === want) s = Math.max(s, 80);
+    if (parts.aria.includes(want) || parts.ph.includes(want)) s = Math.max(s, 45);
+    if (parts.labelledby.includes(want) || parts.forLabel.includes(want) || near.includes(want)) s = Math.max(s, 40);
+    if (parts.testid.includes(want.replace(/\s+/g, ''))) s = Math.max(s, 40);
+    if (parts.name.includes(want)) s = Math.max(s, 30);
+    best = Math.max(best, s);
   }
-  return null;
+  if (best > 0) {
+    const editable = !!(el.isContentEditable || el.tagName === 'TEXTAREA');
+    if (preferEditable && editable) best += 20;
+    if (!preferEditable && el.tagName === 'INPUT') best += 10;
+    // Deprioritise the top search box and anything in a header/nav.
+    try { if (el.closest('header, nav, [role="banner"], [role="navigation"]')) best -= 50; } catch (e) {}
+  }
+  return best;
+}
+function findInputByLabels(labels) {
+  const preferEditable = labels.some(l => /description/i.test(l));
+  let bestEl = null, bestScore = 0;
+  for (const el of candidateFields()) {
+    const s = scoreField(el, labels, preferEditable);
+    if (s > bestScore) { bestScore = s; bestEl = el; }
+  }
+  return bestScore > 0 ? bestEl : null;
+}
+/* One bounded diagnostic dump per fill: what editable fields the page
+ * actually has, so a "not found" can be fixed from the Log alone.
+ * Values are never logged — only structure (tag/role/labels). */
+function logFieldDiagnostics() {
+  try {
+    const cands = candidateFields();
+    addLog('Form diagnostics: ' + cands.length + ' editable field(s) visible.');
+    cands.slice(0, 12).forEach((el, i) => {
+      const p = fieldLabelText(el);
+      const desc = (el.tagName || '').toLowerCase() +
+        (el.type ? '/' + el.type : '') +
+        (el.isContentEditable ? '/editable' : '') +
+        ' aria="' + p.aria + '" ph="' + p.ph + '" lb="' + p.labelledby + '" near="' + nearbyLabelText(el) + '"';
+      addLog('  #' + (i + 1) + ' ' + desc);
+      try { console.log('[LMP field #' + (i + 1) + ']', el, desc); } catch (e) {}
+    });
+  } catch (e) { addLog('Form diagnostics failed: ' + e.message, 'warn'); }
+}
+async function expandMoreDetails() {
+  try {
+    const els = Array.from(document.querySelectorAll('[role="button"], button, div, span'));
+    for (const el of els) {
+      if (inPanel(el) || !visible(el)) continue;
+      if (allText(el).toLowerCase() !== 'more details') continue;
+      const expanded = el.getAttribute('aria-expanded');
+      if (expanded === 'true') return;
+      el.click();
+      await sleep(900);
+      addLog('Expanded "More details".');
+      return;
+    }
+  } catch (e) { /* optional step; fill continues without it */ }
 }
 
 async function fillTextField(labels, value, settings, fieldName) {
   const el = await waitFor(() => findInputByLabels(labels), 12000);
-  if (!el) { addLog('Field not found: ' + fieldName + ' — left for manual entry.', 'warn'); return false; }
+  if (!el) {
+    addLog('Field not found: ' + fieldName + ' — left for manual entry. See diagnostics in Log.', 'warn');
+    return false;
+  }
   await humanType(el, value, settings);
   addLog('Filled: ' + fieldName);
   return true;
@@ -553,7 +723,7 @@ async function selectFromDropdown(labels, optionText, fieldName) {
   const trigger = await waitFor(() => {
     const cands = Array.from(document.querySelectorAll('[role="combobox"], [role="button"], label, div'));
     for (const el of cands) {
-      if (!visible(el)) continue;
+      if (inPanel(el) || !visible(el)) continue;
       const t = allText(el).toLowerCase();
       const aria = (el.getAttribute('aria-label') || '').toLowerCase();
       if (labels.some(l => t === l.toLowerCase() || aria === l.toLowerCase() ||
@@ -569,7 +739,8 @@ async function selectFromDropdown(labels, optionText, fieldName) {
   const search = findInputByLabels(['search', 'category', 'condition']);
   if (search && visible(search)) { await humanType(search, optionText, loadSettings()); await randDelay(700, 1200); }
   const option = await waitFor(() => {
-    const opts = Array.from(document.querySelectorAll('[role="option"], [role="menuitem"], li, div[role="button"]'));
+    const opts = Array.from(document.querySelectorAll('[role="option"], [role="menuitem"], li, div[role="button"]'))
+      .filter(o => !inPanel(o));
     const want = optionText.toLowerCase().trim();
     return opts.find(o => visible(o) && allText(o).toLowerCase() === want) ||
       opts.find(o => visible(o) && allText(o).toLowerCase().includes(want)) || null;
@@ -653,7 +824,10 @@ async function uploadPhotos(listing, settings) {
 }
 
 function findButtonByText(texts) {
-  const btns = Array.from(document.querySelectorAll('[role="button"], button, a'));
+  // Exclude the script's own panel: its tabs include "Renew", which must
+  // never be mistaken for a Facebook Renew/Publish control.
+  const btns = Array.from(document.querySelectorAll('[role="button"], button, a'))
+    .filter(b => !inPanel(b));
   for (const t of texts) {
     const want = t.toLowerCase();
     const hit = btns.find(b => visible(b) && (allText(b).toLowerCase() === want ||
@@ -682,6 +856,8 @@ function isSellingPage() { return /\/marketplace\/you\/selling/.test(location.pa
 
 async function fillListingForm(listing, rendered, settings) {
   addLog('Filling form: ' + rendered.title);
+  await expandMoreDetails();
+  logFieldDiagnostics();
   // Photos first — Facebook validates the form as uploads finish.
   const photos = await uploadPhotos(listing, settings);
   await fillTextField(['title', 'listing title'], rendered.title, settings, 'Title');
@@ -819,7 +995,7 @@ function scanRenewables() {
   const els = Array.from(document.querySelectorAll('[role="button"], button, a, [role="menuitem"]'));
   els.forEach((el, i) => {
     const t = allText(el).toLowerCase();
-    if (!visible(el)) return;
+    if (inPanel(el) || !visible(el)) return;
     if (t === 'renew' || t === 'renew listing' || t.includes('renew listing')) {
       const card = el.closest('div');
       found.push({ index: i, label: allText(el), el });
@@ -905,7 +1081,7 @@ function buildPanel() {
   panel.id = 'lmp-panel';
   panel.innerHTML =
     '<div id="lmp-head"><h1>🔑 Locksmith Marketplace Poster</h1>' +
-    '<p>Standalone v1.1.0 &nbsp;•&nbsp; No server &nbsp;•&nbsp; Account: this Chrome profile\'s logged-in Facebook account</p></div>' +
+    '<p>Standalone v1.1.1 &nbsp;•&nbsp; No server &nbsp;•&nbsp; Account: this Chrome profile\'s logged-in Facebook account</p></div>' +
     '<div class="lmp-tabs">' +
     '<button class="lmp-tab" data-tab="listings">Listings</button>' +
     '<button class="lmp-tab" data-tab="queue">Queue</button>' +
@@ -1227,7 +1403,7 @@ function boot() {
   try { if (window.top !== window.self) return; } catch (e) { return; }
   buildPanel();
   refreshPhotoCounts();
-  addLog('Locksmith Poster ready (standalone v1.1.0). ' +
+  addLog('Locksmith Poster ready (standalone v1.1.1). ' +
     (loadSettings().autoPublish ? 'Mode: Fill + Publish.' : 'Mode: Fill-only dry-run — safe to test.'));
   const q = loadQueue();
   if (q.running && q.items.length && q.index < q.items.length) {
@@ -1239,9 +1415,10 @@ function boot() {
 // Debug/test handle (read-only helpers + state). Harmless in production.
 try {
   window.LMP = {
-    version: '1.1.0', spinText, applyTokens, renderListing, pickPrice,
+    version: '1.1.1', spinText, applyTokens, renderListing, pickPrice,
     seedListings, loadListings, loadSettings, CITIES, ALL_SERVICES,
-    photoStoreAvailable, resolveListingPhotoFiles, getStoredPhotos, storePhotos
+    photoStoreAvailable, resolveListingPhotoFiles, getStoredPhotos, storePhotos,
+    findInputByLabels, humanType, setEditableText, logFieldDiagnostics
   };
 } catch (e) {}
 
