@@ -1,6 +1,6 @@
 # Locksmith Marketplace Poster — Standalone (Tampermonkey)
 
-**Version 1.0.0 — for hammadsolomon (Fiverr order FO5234353C085)**
+**Version 1.1.0 — for hammadsolomon (Fiverr order FO5234353C085)**
 
 A standalone Tampermonkey userscript that fills and posts Facebook Marketplace
 listings for locksmith services from a side panel. **No server, no Python, no
@@ -31,10 +31,12 @@ Tampermonkey storage in the browser.
 - **Two modes.** Fill-only dry-run (default, safe) fills the form and
   pauses so you can review. Fill + Publish clicks Next/Publish and moves
   to the next listing. Change mode in Settings.
-- **Photos from URLs.** Each listing holds image URLs (one per line).
-  The script downloads them and attaches them to Facebook's photo input.
-  Listings with no image URLs fill everything else and stop before
-  Publish with a clear warning — add photos by hand in that case.
+- **Photos: upload or links (v1.1.0).** Upload photos from the computer
+  in Add/Edit — they are stored in the browser (IndexedDB, this Chrome
+  profile only) and reused for every post of that listing. Image URLs
+  (one per line) still work too; uploaded photos attach first and links
+  fill the remaining slots. Listings with no photos at all fill
+  everything else and stop before Publish with a clear warning.
 - **Renew helper.** On the Selling page, scan for visible Renew controls
   and renew them one by one (best-effort — see Limits).
 - **Backup.** Export/import listings as JSON in Settings.
@@ -50,17 +52,27 @@ Tampermonkey storage in the browser.
    If it doesn't, refresh once and check Tampermonkey shows the script
    as Enabled on that page.
 
-## 2. Add images (important)
+## 2. Add photos (important)
 
 Facebook requires at least 1 photo per listing, and the 10 seed listings
-ship with **no images on purpose** — no fake image URLs were invented.
+ship with **no photos on purpose** — no fake images or URLs were invented.
 
-For each listing (Edit → Image URLs, one per line) paste **direct image
-links** ending in `.jpg` / `.png` / `.webp`, e.g. from your own website
-or an image host that serves the file directly. Google Drive "share"
-links do **not** work as direct images. If a photo cannot be downloaded,
-the Log says so and the listing is skipped for publishing — fix the URL
-and retry. Without URLs, use Fill-only mode and add photos by hand on
+**Recommended — upload:** Edit a listing → **Choose photos** → select
+2–4 photos from the computer → **Save**. Thumbnails appear in the editor
+(✕ removes one). The photos stay saved in this Chrome profile and are
+attached automatically on every post. Keep the originals on the
+computer: clearing Facebook site data deletes the saved copies, and
+Export JSON does not include uploaded photos, so another profile or
+computer needs its own upload. Prefer JPGs under ~5 MB each.
+
+**Alternative — links:** Edit → Image URLs, one per line, paste **direct
+image links** ending in `.jpg` / `.png` / `.webp`, e.g. from your own
+website or an image host that serves the file directly. Google Drive
+"share" links do **not** work as direct images. If a photo cannot be
+downloaded, the Log says so and the listing is skipped for publishing —
+fix the URL and retry. You can mix uploads and links on one listing.
+
+Without any photos, use Fill-only mode and add photos by hand on
 Facebook before publishing.
 
 ## 3. First live test (do this before auto-publish)
@@ -104,9 +116,12 @@ Facebook before publishing.
 - **No safety guarantee.** Start slow (a few listings/day), warm up new
   accounts, and stop immediately on any Facebook warning, checkpoint or
   restriction. No posting volume is 100% safe.
-- **Images depend on the host.** Some hosts block cross-site downloads;
-  the Log will show which photo failed. Use a host that serves direct
-  files, or add photos by hand.
+- **Uploaded photos live in one browser profile only.** They do not
+  sync, are not in Export JSON, and disappear if Facebook site data is
+  cleared. Keep the original files.
+- **Linked images depend on the host.** Some hosts block cross-site
+  downloads; the Log will show which photo failed. Use a host that
+  serves direct files, upload the photo instead, or add photos by hand.
 
 ## Troubleshooting
 
@@ -114,26 +129,35 @@ Facebook before publishing.
 |---|---|
 | Panel doesn't appear | Tampermonkey enabled? On `facebook.com/marketplace/*`? Refresh. |
 | "Field not found: Title/Price/…" | Facebook layout changed. Note the field name from the Log; fill by hand for now and report the field + a screenshot. |
-| Photos not attached | Image URL must be a direct file link and downloadable. Check Log for the failing URL. |
+| Photos not attached | Uploaded photos: check the editor still shows thumbnails (site data may have been cleared — re-upload). Links: image URL must be a direct file link and downloadable. Check Log for the failing URL. |
+| "Photo storage unavailable" in Log | IndexedDB is blocked in this browser/profile. Image URLs still work; try another Chrome profile for uploads. |
 | Publish button stayed disabled | Usually missing photos or a required field. Fill-only mode shows what's missing. |
 | Queue stops after 1 listing | Fill-only mode pauses after each fill by design. Turn on Auto-publish in Settings for continuous runs. |
 | Script asks about a host on first photo download | Tampermonkey `@connect *` covers image hosts; allow the request if Tampermonkey prompts. |
 
 ## What was tested (Nov 12, 2026)
 
-- `node --check` — syntax OK (1,018 lines, ~55 KB).
-- Logic harness (15 checks, all pass): 10 seed listings, 40 services,
-  7 cities, spintax variation (17 unique title/description combos in
+- `node --check` — syntax OK (1,251 lines, ~68 KB).
+- Logic harness (19 checks, all pass): 10 seed listings, 40 services,
+  7 cities, spintax variation (15 unique title/description combos in
   40 renders of one template), token replacement, price within range
   and rounded to $5, used-combination avoidance, safe defaults
-  (auto-publish OFF, interval 180–300s).
+  (auto-publish OFF, interval 180–300s), plus photo-resolution soft
+  failure without IndexedDB (empty result, no throw).
+- Fake-IndexedDB harness (7 checks, all pass): store 2 photos, non-image
+  filtered out, read-back with names, resolve to File objects with
+  names/types preserved.
 - Panel smoke test (fake DOM): script boots without errors, listings
-  render with names, NO IMAGES badges and queue button.
+  render with names, NO PHOTOS badges, uploaded/link counts and queue
+  button after the async photo-count refresh.
 - **Not tested:** live logged-in Facebook Marketplace create/selling
-  pages, real photo download from a live host, real Publish, real Renew.
-  Those need Shariful's own-account live test (Step 3 above).
+  pages, real photo upload/attach on Facebook, real photo download
+  from a live host, real Publish, real Renew. Those need Shariful's
+  own-account live test (Step 3 above). Photo copy/delete on
+  Duplicate/Delete share the tested IndexedDB patterns but were not
+  individually harness-tested.
 
 ## Files
 
-- `locksmith-marketplace-poster.user.js` — the script (v1.0.0).
+- `locksmith-marketplace-poster.user.js` — the script (v1.1.0).
 - `README.md` — this file.

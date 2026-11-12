@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Locksmith Marketplace Poster (Standalone)
 // @namespace    https://locksmith-marketplace-poster.local
-// @version      1.0.0
-// @description  Standalone Facebook Marketplace auto-listing panel for locksmith services. No server needed: listings, variation, schedule and queue all live in Tampermonkey storage. Fill-only dry-run mode included for safe live testing.
+// @version      1.1.0
+// @description  Standalone Facebook Marketplace auto-listing panel for locksmith services. No server needed: listings, variation, schedule and queue all live in Tampermonkey storage; photos can be uploaded from your computer (stored in the browser) or given as image links. Fill-only dry-run mode included for safe live testing.
 // @author       Shariful Islam
 // @match        https://www.facebook.com/marketplace/*
 // @match        https://www.facebook.com/marketplace
@@ -14,7 +14,7 @@
 // @run-at       document-idle
 // ==/UserScript==
 /*
- * Locksmith Marketplace Poster — STANDALONE v1.0.0
+ * Locksmith Marketplace Poster — STANDALONE v1.1.0
  * -------------------------------------------------
  * Built for hammadsolomon (Fiverr order FO5234353C085, $200 one-time).
  * Requirements covered:
@@ -24,10 +24,14 @@
  *  - Variation: spintax {a|b|c} + {city} / {service} / {make} tokens +
  *    price jitter + already-used combination tracking, so the exact same
  *    title/description is not posted repeatedly.
+ *  - Photos: upload from the computer (stored in IndexedDB in this
+ *    Chrome profile, reused for every post) and/or image URLs.
+ *    Uploaded photos attach first; links fill the remaining slots.
  *  - Renew/repost helper on the Selling page (best-effort — Facebook
  *    changes this UI often; see README).
  *  - Multiple accounts = multiple Chrome profiles, one install per profile.
  *    This script never switches Facebook accounts itself.
+ *  - v1.1.0 adds photo upload (IndexedDB). v1.0.0 was links-only.
  *
  * LIVE-TEST STATUS: local syntax + logic tests pass. Facebook form
  * selectors have NOT been verified against a live logged-in Marketplace
@@ -273,6 +277,187 @@ function markUsed(key) {
   if (!used.includes(key)) { used.push(key); saveUsed(used); }
 }
 
+/* ================= PHOTO STORE (IndexedDB) ========================== */
+/* Uploaded photos live in IndexedDB under the facebook.com origin, one
+ * record per photo, keyed by listing. GM storage is NOT used for image
+ * bytes (too small and slow for photos). Photos stay in this Chrome
+ * profile only; clearing Facebook site data deletes them; Export JSON
+ * does not include them. Every function fails soft (empty result + one
+ * log line) when IndexedDB is unavailable, so URL-only listings keep
+ * working exactly as in v1.0.0. */
+
+const PHOTO_DB = 'lmp-photos-v1';
+const PHOTO_STORE = 'photos';
+let photoDbPromise = null;
+let photoStoreWarned = false;
+let photoCounts = {};
+let photoCountsLoaded = false;
+let pendingUploadFiles = [];
+
+function photoStoreAvailable() {
+  try { return typeof window !== 'undefined' && !!window.indexedDB; } catch (e) { return false; }
+}
+function openPhotoDb() {
+  if (!photoStoreAvailable()) return Promise.reject(new Error('IndexedDB unavailable'));
+  if (photoDbPromise) return photoDbPromise;
+  photoDbPromise = new Promise((resolve, reject) => {
+    let req;
+    try { req = window.indexedDB.open(PHOTO_DB, 1); } catch (e) { photoDbPromise = null; return reject(e); }
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains(PHOTO_STORE)) {
+        const store = db.createObjectStore(PHOTO_STORE, { keyPath: 'id' });
+        store.createIndex('byListing', 'listingId', { unique: false });
+      }
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => { photoDbPromise = null; reject(req.error || new Error('IndexedDB open failed')); };
+  });
+  return photoDbPromise;
+}
+function warnPhotoStoreOnce(err) {
+  if (photoStoreWarned) return;
+  photoStoreWarned = true;
+  addLog('Photo storage unavailable (' + (err && err.message ? err.message : 'IndexedDB blocked') + ') — image URLs still work.', 'warn');
+}
+function isImageFile(f) {
+  if (!f) return false;
+  if (/^image\//.test(f.type || '')) return true;
+  return /\.(jpe?g|png|webp|gif)$/i.test(f.name || '');
+}
+function storePhotos(listingId, files) {
+  const list = Array.from(files || []).filter(isImageFile);
+  if (!list.length) return Promise.resolve(0);
+  return openPhotoDb().then(db => new Promise((resolve, reject) => {
+    let tx;
+    try { tx = db.transaction(PHOTO_STORE, 'readwrite'); } catch (e) { return reject(e); }
+    const store = tx.objectStore(PHOTO_STORE);
+    list.forEach(f => {
+      try {
+        store.put({ id: listingId + '/' + uid(), listingId, name: f.name || 'photo',
+          type: f.type || 'image/jpeg', size: f.size || 0, blob: f, addedAt: Date.now() });
+      } catch (e) { /* one bad file must not abort the rest; tx error below reports it */ }
+    });
+    tx.oncomplete = () => resolve(list.length);
+    tx.onerror = () => reject(tx.error || new Error('Photo save failed'));
+    tx.onabort = () => reject(tx.error || new Error('Photo save aborted'));
+  })).catch(e => { warnPhotoStoreOnce(e); return 0; });
+}
+function getStoredPhotos(listingId) {
+  return openPhotoDb().then(db => new Promise((resolve, reject) => {
+    let tx;
+    try { tx = db.transaction(PHOTO_STORE, 'readonly'); } catch (e) { return reject(e); }
+    const req = tx.objectStore(PHOTO_STORE).index('byListing').getAll(listingId);
+    req.onsuccess = () => resolve(req.result || []);
+    req.onerror = () => reject(req.error || new Error('Photo read failed'));
+  })).catch(e => { warnPhotoStoreOnce(e); return []; });
+}
+function deleteStoredPhoto(photoId) {
+  return openPhotoDb().then(db => new Promise((resolve, reject) => {
+    let tx;
+    try { tx = db.transaction(PHOTO_STORE, 'readwrite'); } catch (e) { return reject(e); }
+    tx.objectStore(PHOTO_STORE).delete(photoId);
+    tx.oncomplete = () => resolve(true);
+    tx.onerror = () => reject(tx.error || new Error('Photo delete failed'));
+  })).catch(e => { warnPhotoStoreOnce(e); return false; });
+}
+function deleteListingPhotos(listingId) {
+  return getStoredPhotos(listingId).then(rows => {
+    if (!rows.length) return 0;
+    return openPhotoDb().then(db => new Promise((resolve, reject) => {
+      let tx;
+      try { tx = db.transaction(PHOTO_STORE, 'readwrite'); } catch (e) { return reject(e); }
+      const store = tx.objectStore(PHOTO_STORE);
+      rows.forEach(r => store.delete(r.id));
+      tx.oncomplete = () => resolve(rows.length);
+      tx.onerror = () => reject(tx.error || new Error('Photo delete failed'));
+    }));
+  }).catch(e => { warnPhotoStoreOnce(e); return 0; });
+}
+function copyListingPhotos(srcId, dstId) {
+  return getStoredPhotos(srcId).then(rows => {
+    if (!rows.length) return 0;
+    return openPhotoDb().then(db => new Promise((resolve, reject) => {
+      let tx;
+      try { tx = db.transaction(PHOTO_STORE, 'readwrite'); } catch (e) { return reject(e); }
+      const store = tx.objectStore(PHOTO_STORE);
+      rows.forEach(r => store.put({ id: dstId + '/' + uid(), listingId: dstId,
+        name: r.name, type: r.type, size: r.size, blob: r.blob, addedAt: Date.now() }));
+      tx.oncomplete = () => resolve(rows.length);
+      tx.onerror = () => reject(tx.error || new Error('Photo copy failed'));
+    }));
+  }).catch(e => { warnPhotoStoreOnce(e); return 0; });
+}
+async function refreshPhotoCounts() {
+  try {
+    const listings = loadListings();
+    const counts = {};
+    for (const l of listings) counts[l.id] = (await getStoredPhotos(l.id)).length;
+    photoCounts = counts; photoCountsLoaded = true;
+    if (currentTab === 'listings' && panelEl()) renderPanel();
+  } catch (e) { /* counts are cosmetic; the queue resolves photos directly */ }
+}
+/* Resolve every photo for a listing into File objects: uploaded photos
+ * first (in stored order), then image-URL downloads up to maxImages. */
+async function resolveListingPhotoFiles(listing, settings) {
+  const files = [];
+  let fromUploads = 0, fromUrls = 0;
+  const stored = await getStoredPhotos(listing.id);
+  for (const row of stored.slice(0, settings.maxImages)) {
+    try {
+      files.push(new File([row.blob], row.name || 'photo.jpg', { type: row.type || 'image/jpeg' }));
+      fromUploads++;
+    } catch (e) { /* unreadable stored photo — skip it */ }
+  }
+  const urls = (listing.images || []).filter(Boolean)
+    .slice(0, Math.max(0, settings.maxImages - files.length));
+  for (let i = 0; i < urls.length; i++) {
+    addLog('Downloading photo ' + (i + 1) + '/' + urls.length + '…');
+    const file = await fetchImageAsFile(urls[i], files.length);
+    if (file) { files.push(file); fromUrls++; }
+    else addLog('Could not download photo: ' + urls[i], 'warn');
+    await randDelay(300, 700);
+  }
+  return { files, fromUploads, fromUrls,
+    totalSources: stored.length + (listing.images || []).filter(Boolean).length };
+}
+async function loadEditorThumbs() {
+  const box = document.getElementById('lmp-thumbs');
+  if (!box || !editingId) return;
+  const rows = await getStoredPhotos(editingId);
+  if (document.getElementById('lmp-thumbs') !== box) return; // editor re-rendered meanwhile
+  if (!rows.length) {
+    box.innerHTML = '<p class="lmp-note" style="margin:0">No uploaded photos yet for this listing.</p>';
+    return;
+  }
+  box.innerHTML = '';
+  rows.forEach(row => {
+    const wrap = document.createElement('span');
+    wrap.className = 'lmp-thumb';
+    const img = document.createElement('img');
+    img.alt = row.name || 'photo';
+    try { img.src = URL.createObjectURL(row.blob); } catch (e) { /* leave broken icon; name still shows in title */ }
+    img.title = row.name || 'photo';
+    const btn = document.createElement('button');
+    btn.type = 'button'; btn.textContent = '✕'; btn.title = 'Remove this photo';
+    btn.addEventListener('click', async () => {
+      try { if (img.src && img.src.startsWith('blob:')) URL.revokeObjectURL(img.src); } catch (e) {}
+      await deleteStoredPhoto(row.id);
+      await refreshPhotoCounts();
+      loadEditorThumbs();
+    });
+    wrap.appendChild(img); wrap.appendChild(btn);
+    box.appendChild(wrap);
+  });
+}
+function renderPendingUploads() {
+  const box = document.getElementById('lmp-pending');
+  if (!box) return;
+  if (!pendingUploadFiles.length) { box.innerHTML = ''; return; }
+  box.innerHTML = '<p class="lmp-note" style="margin:6px 0">New photos to save (' + pendingUploadFiles.length + '): ' +
+    pendingUploadFiles.map(f => esc(f.name)).join(', ') + ' — press Save to store them.</p>';
+}
+
 /* ============================ DOM HELPERS =========================== */
 /* Facebook uses React. Setting .value alone does not update React
  * state, so inputs are set through the native setter + input/change
@@ -438,33 +623,33 @@ function fetchImageAsFile(url, index) {
   });
 }
 
-async function uploadPhotos(imageUrls, settings) {
-  const urls = (imageUrls || []).filter(Boolean).slice(0, settings.maxImages);
-  if (!urls.length) {
-    addLog('No image URLs for this listing — add photos by hand before publishing.', 'warn');
-    return { uploaded: 0, total: 0 };
+async function uploadPhotos(listing, settings) {
+  const resolved = await resolveListingPhotoFiles(listing, settings);
+  if (!resolved.totalSources) {
+    addLog('No photos for this listing — upload photos or add image URLs, or add photos by hand before publishing.', 'warn');
+    return { uploaded: 0, total: 0, fromUploads: 0, fromUrls: 0 };
+  }
+  if (!resolved.files.length) {
+    addLog('Photos could not be prepared (stored photos unreadable / image links failed).', 'warn');
+    return { uploaded: 0, total: resolved.totalSources, fromUploads: 0, fromUrls: 0 };
   }
   const input = await waitFor(() => {
     const ins = Array.from(document.querySelectorAll('input[type="file"]'));
     return ins.find(i => (i.getAttribute('accept') || '').includes('image')) || ins[0] || null;
   }, 10000);
-  if (!input) { addLog('Photo upload input not found — add photos by hand.', 'warn'); return { uploaded: 0, total: urls.length }; }
-  const dt = new DataTransfer();
-  let ok = 0;
-  for (let i = 0; i < urls.length; i++) {
-    addLog('Downloading photo ' + (i + 1) + '/' + urls.length + '…');
-    const file = await fetchImageAsFile(urls[i], i);
-    if (file) { dt.items.add(file); ok++; }
-    else addLog('Could not download photo: ' + urls[i], 'warn');
-    await randDelay(300, 700);
+  if (!input) {
+    addLog('Photo upload input not found — add photos by hand.', 'warn');
+    return { uploaded: 0, total: resolved.totalSources, fromUploads: resolved.fromUploads, fromUrls: resolved.fromUrls };
   }
-  if (!ok) return { uploaded: 0, total: urls.length };
+  const dt = new DataTransfer();
+  resolved.files.forEach(f => dt.items.add(f));
   input.files = dt.files;
   input.dispatchEvent(new Event('input', { bubbles: true }));
   input.dispatchEvent(new Event('change', { bubbles: true }));
-  addLog('Attached ' + ok + ' photo(s). Waiting for Facebook upload…');
-  await sleep(2500 + ok * 800);
-  return { uploaded: ok, total: urls.length };
+  addLog('Attached ' + resolved.files.length + ' photo(s) (' + resolved.fromUploads + ' uploaded, ' + resolved.fromUrls + ' from links). Waiting for Facebook upload…');
+  await sleep(2500 + resolved.files.length * 800);
+  return { uploaded: resolved.files.length, total: resolved.totalSources,
+    fromUploads: resolved.fromUploads, fromUrls: resolved.fromUrls };
 }
 
 function findButtonByText(texts) {
@@ -498,7 +683,7 @@ function isSellingPage() { return /\/marketplace\/you\/selling/.test(location.pa
 async function fillListingForm(listing, rendered, settings) {
   addLog('Filling form: ' + rendered.title);
   // Photos first — Facebook validates the form as uploads finish.
-  const photos = await uploadPhotos(listing.images, settings);
+  const photos = await uploadPhotos(listing, settings);
   await fillTextField(['title', 'listing title'], rendered.title, settings, 'Title');
   if (rendered.price) await fillTextField(['price'], rendered.price, settings, 'Price');
   const category = listing.category || settings.categoryDefault;
@@ -568,11 +753,11 @@ async function runQueueStep() {
   const fill = await fillListingForm(listing, rendered, settings);
   if (settings.autoPublish) {
     if (fill.photos.total > 0 && fill.photos.uploaded === 0) {
-      item.status = 'failed'; item.note = 'Photos could not be downloaded';
-      addLog('Publish skipped: no photos attached. Fix image URLs and retry this listing.', 'warn');
-    } else if (!listing.images || !listing.images.length) {
-      item.status = 'failed'; item.note = 'No images — add photos first';
-      addLog('Publish skipped: this listing has no image URLs. Add photos or post it by hand.', 'warn');
+      item.status = 'failed'; item.note = 'Photos could not be attached';
+      addLog('Publish skipped: no photos attached. Fix the uploaded photos / image URLs and retry this listing.', 'warn');
+    } else if (fill.photos.total === 0) {
+      item.status = 'failed'; item.note = 'No photos — upload photos or add image URLs first';
+      addLog('Publish skipped: this listing has no photos. Upload photos in Edit, add image URLs, or post it by hand.', 'warn');
     } else {
       const ok = await publishCurrentListing(settings);
       item.status = ok ? 'done' : 'failed';
@@ -699,6 +884,10 @@ const PANEL_CSS = `
 .lmp-warn{color:#fdb022}.lmp-ok{color:#32d583}.lmp-error{color:#f97066}
 .lmp-note{font-size:11px;color:#98a2b3;background:#1d2939;border-radius:6px;padding:8px;margin:8px 0}
 .lmp-preview{background:#101828;border:1px dashed #344054;border-radius:6px;padding:8px;font-size:12px;white-space:pre-wrap;margin:6px 0}
+#lmp-thumbs{margin:6px 0}
+.lmp-thumb{display:inline-block;position:relative;margin:0 8px 8px 0;vertical-align:top}
+.lmp-thumb img{width:76px;height:56px;object-fit:cover;border-radius:6px;display:block;border:1px solid #344054}
+.lmp-thumb button{position:absolute;top:-7px;right:-7px;width:20px;height:20px;border:none;border-radius:50%;background:#b42318;color:#fff;font-size:11px;line-height:1;cursor:pointer;padding:0}
 `;
 
 let currentTab = 'listings';
@@ -716,7 +905,7 @@ function buildPanel() {
   panel.id = 'lmp-panel';
   panel.innerHTML =
     '<div id="lmp-head"><h1>🔑 Locksmith Marketplace Poster</h1>' +
-    '<p>Standalone v1.0.0 &nbsp;•&nbsp; No server &nbsp;•&nbsp; Account: this Chrome profile\'s logged-in Facebook account</p></div>' +
+    '<p>Standalone v1.1.0 &nbsp;•&nbsp; No server &nbsp;•&nbsp; Account: this Chrome profile\'s logged-in Facebook account</p></div>' +
     '<div class="lmp-tabs">' +
     '<button class="lmp-tab" data-tab="listings">Listings</button>' +
     '<button class="lmp-tab" data-tab="queue">Queue</button>' +
@@ -735,7 +924,7 @@ function buildPanel() {
     toggle.textContent = panel.classList.contains('lmp-collapsed') ? '▶' : '◀';
   });
   document.body.appendChild(toggle);
-  panel.querySelectorAll('.lmp-tab').forEach(b => b.addEventListener('click', () => { currentTab = b.dataset.tab; renderPanel(); }));
+  panel.querySelectorAll('.lmp-tab').forEach(b => b.addEventListener('click', () => { if (b.dataset.tab !== 'edit') pendingUploadFiles = []; currentTab = b.dataset.tab; renderPanel(); }));
   logEl = null;
   renderPanel();
 }
@@ -766,12 +955,14 @@ function listingsHtml() {
     'Titles/descriptions are spun fresh for every post — use Preview to see an example.</p><div id="lmp-preview"></div>';
   shown.forEach(l => {
     const sel = selectedIds.has(l.id);
-    const noImg = !l.images || !l.images.length;
+    const linkCount = (l.images || []).length;
+    const uploadedCount = photoCountsLoaded ? (photoCounts[l.id] || 0) : 0;
+    const noImg = linkCount === 0 && photoCountsLoaded && uploadedCount === 0;
     h += '<div class="lmp-card' + (sel ? ' lmp-selected' : '') + '">' +
       '<label><input type="checkbox" data-check="' + esc(l.id) + '"' + (sel ? ' checked' : '') + '> ' +
-      '<h3 style="display:inline">' + esc(l.name) + (noImg ? '<span class="lmp-badge">NO IMAGES</span>' : '') + '</h3></label>' +
+      '<h3 style="display:inline">' + esc(l.name) + (noImg ? '<span class="lmp-badge">NO PHOTOS</span>' : '') + '</h3></label>' +
       '<p>' + esc(l.service) + ' • ' + esc(l.city) + ' • <span class="lmp-price">$' + esc(l.price) +
-      (l.priceVary ? ' ±$' + esc(l.priceVary) : '') + '</span> • ' + (l.images || []).length + ' image(s)</p>' +
+      (l.priceVary ? ' ±$' + esc(l.priceVary) : '') + '</span> • ' + uploadedCount + ' uploaded + ' + linkCount + ' link photo(s)</p>' +
       '<p>' + esc((l.titleTemplate || '').slice(0, 90)) + '</p>' +
       '<button class="lmp-btn lmp-secondary" data-edit="' + esc(l.id) + '">Edit</button>' +
       '<button class="lmp-btn lmp-secondary" data-dup="' + esc(l.id) + '">Duplicate</button>' +
@@ -821,8 +1012,11 @@ function editorHtml() {
   h += '<div class="lmp-label">Description template — use {a|b} + {city} {service}</div><textarea id="f-desc" class="lmp-textarea" style="min-height:110px">' + esc(v.descriptionTemplate) + '</textarea>';
   h += '<div class="lmp-row"><div><div class="lmp-label">Category (exact FB name, optional)</div><input id="f-cat" class="lmp-input" value="' + esc(v.category) + '" placeholder="Leave blank to skip"></div>' +
     '<div><div class="lmp-label">Condition (optional)</div><input id="f-cond" class="lmp-input" value="' + esc(v.condition) + '" placeholder="Leave blank to skip"></div></div>';
-  h += '<div class="lmp-label">Image URLs — one per line (direct .jpg/.png links)</div><textarea id="f-images" class="lmp-textarea" placeholder="https://example.com/photo1.jpg">' + esc((v.images || []).join('\n')) + '</textarea>';
-  h += '<p class="lmp-note">No image URLs? Leave blank and use Fill-only mode, then add photos by hand on Facebook before publishing. Facebook needs at least 1 photo per listing.</p>';
+  h += '<div class="lmp-label">Photos — upload from this computer (recommended)</div>';
+  h += '<input id="f-upload" class="lmp-input" type="file" accept="image/*" multiple>';
+  h += '<div id="lmp-pending"></div><div id="lmp-thumbs"></div>';
+  h += '<div class="lmp-label">…or image URLs — one per line (direct .jpg/.png links)</div><textarea id="f-images" class="lmp-textarea" placeholder="https://example.com/photo1.jpg">' + esc((v.images || []).join('\n')) + '</textarea>';
+  h += '<p class="lmp-note">Uploaded photos are saved in this browser profile and reused for every post of this listing. You can use uploads, links, or both (uploads attach first). Facebook needs at least 1 photo per listing. Export JSON does not include uploaded photos.</p>';
   h += '<button class="lmp-btn lmp-wide" data-act="save-listing">' + (l ? 'Save changes' : 'Add listing') + '</button>';
   h += '<button class="lmp-btn lmp-secondary lmp-wide" data-act="new-listing">+ New blank listing</button>';
   h += '<button class="lmp-btn lmp-secondary lmp-wide" data-act="reset-seed">Restore the 10 example listings</button>';
@@ -856,6 +1050,7 @@ function settingsHtml() {
   h += '<button class="lmp-btn lmp-secondary" data-act="export">Export listings (JSON)</button>' +
     '<button class="lmp-btn lmp-secondary" data-act="import">Import JSON</button>';
   h += '<textarea id="s-io" class="lmp-textarea" style="min-height:100px" placeholder="Export output / import JSON goes here"></textarea>';
+  h += '<p class="lmp-note">Export / import covers listing text, prices, cities and image URLs only — uploaded photos stay in this browser profile and must be uploaded again on another profile or computer.</p>';
   h += '<p class="lmp-note">Multiple Facebook accounts: use a separate Chrome profile per account, install this script in each profile, and keep each profile\'s listings separate. Using a separate proxy per profile reduces flag risk. No posting volume is 100% safe — start slow (a few listings/day) and watch for Facebook warnings.</p>';
   return h;
 }
@@ -877,7 +1072,7 @@ function wirePanel(body) {
     if (cb.checked) selectedIds.add(cb.dataset.check); else selectedIds.delete(cb.dataset.check);
     renderPanel();
   }));
-  body.querySelectorAll('[data-edit]').forEach(b => b.addEventListener('click', () => { editingId = b.dataset.edit; currentTab = 'edit'; renderPanel(); }));
+  body.querySelectorAll('[data-edit]').forEach(b => b.addEventListener('click', () => { pendingUploadFiles = []; editingId = b.dataset.edit; currentTab = 'edit'; renderPanel(); }));
   body.querySelectorAll('[data-dup]').forEach(b => b.addEventListener('click', () => {
     const listings = loadListings();
     const src = listings.find(l => l.id === b.dataset.dup);
@@ -885,15 +1080,35 @@ function wirePanel(body) {
     const copy = JSON.parse(JSON.stringify(src));
     copy.id = uid(); copy.name = src.name + ' (copy)';
     listings.push(copy); saveListings(listings);
-    addLog('Duplicated: ' + src.name); renderPanel();
+    copyListingPhotos(src.id, copy.id).then(n => {
+      if (n) addLog('Duplicated: ' + src.name + ' (copied ' + n + ' uploaded photo(s)).');
+      else addLog('Duplicated: ' + src.name);
+      refreshPhotoCounts();
+    });
+    renderPanel();
   }));
   body.querySelectorAll('[data-del]').forEach(b => b.addEventListener('click', () => {
-    if (!confirm('Delete this listing template?')) return;
-    saveListings(loadListings().filter(l => l.id !== b.dataset.del));
-    selectedIds.delete(b.dataset.del);
+    if (!confirm('Delete this listing template? Its uploaded photos will be deleted too.')) return;
+    const delId = b.dataset.del;
+    saveListings(loadListings().filter(l => l.id !== delId));
+    selectedIds.delete(delId);
+    deleteListingPhotos(delId).then(() => refreshPhotoCounts());
     addLog('Deleted listing.'); renderPanel();
   }));
   body.querySelectorAll('[data-act]').forEach(b => b.addEventListener('click', () => handleAction(b.dataset.act, body)));
+  // Editor photo controls (only present on the Add/Edit tab).
+  const uploadInput = document.getElementById('f-upload');
+  if (uploadInput) uploadInput.addEventListener('change', () => {
+    const pickedAll = Array.from(uploadInput.files || []);
+    const picked = pickedAll.filter(isImageFile);
+    if (picked.length < pickedAll.length) addLog((pickedAll.length - picked.length) + ' non-image file(s) skipped.', 'warn');
+    const big = picked.filter(f => f.size > 5 * 1024 * 1024);
+    if (big.length) addLog(big.length + ' photo(s) over 5 MB — they will still save, but attaching may be slow. Smaller JPGs are better.', 'warn');
+    pendingUploadFiles = pendingUploadFiles.concat(picked);
+    renderPendingUploads();
+  });
+  renderPendingUploads();
+  if (currentTab === 'edit' && editingId) loadEditorThumbs();
 }
 
 function handleAction(act, body) {
@@ -944,21 +1159,37 @@ function handleAction(act, body) {
       condition: document.getElementById('f-cond').value.trim(),
       images, enabled: true
     };
-    if (editingId) {
-      const i = listings.findIndex(l => l.id === editingId);
+    const wasEdit = !!editingId;
+    let targetId = editingId;
+    if (targetId) {
+      const i = listings.findIndex(l => l.id === targetId);
       if (i >= 0) listings[i] = Object.assign(listings[i], data);
-      addLog('Saved: ' + name);
     } else {
-      listings.push(Object.assign({ id: uid(), createdAt: Date.now() }, data));
-      addLog('Added: ' + name);
+      targetId = uid();
+      listings.push(Object.assign({ id: targetId, createdAt: Date.now() }, data));
     }
-    saveListings(listings); editingId = null; currentTab = 'listings'; renderPanel();
+    saveListings(listings);
+    const pending = pendingUploadFiles.slice();
+    pendingUploadFiles = [];
+    const finish = () => {
+      addLog((wasEdit ? 'Saved: ' : 'Added: ') + name);
+      editingId = null; currentTab = 'listings'; refreshPhotoCounts(); renderPanel();
+    };
+    if (pending.length) {
+      addLog('Saving ' + pending.length + ' photo(s)…');
+      storePhotos(targetId, pending).then(n => {
+        if (n) addLog('Saved ' + n + ' photo(s) for this listing.', 'ok');
+        else addLog('Photos could not be saved (photo storage unavailable) — listing saved without them.', 'warn');
+        finish();
+      }).catch(e => { addLog('Photo save failed: ' + e.message, 'warn'); finish(); });
+    } else finish();
   }
-  else if (act === 'new-listing') { editingId = null; renderPanel(); }
+  else if (act === 'new-listing') { pendingUploadFiles = []; editingId = null; renderPanel(); }
   else if (act === 'reset-seed') {
-    if (!confirm('Replace ALL listings with the 10 original examples? Your edits will be lost.')) return;
+    if (!confirm('Replace ALL listings with the 10 original examples? Your edits will be lost. Uploaded photos stay attached to the example listings with the same names.')) return;
+    pendingUploadFiles = [];
     saveListings(seedListings()); selectedIds.clear();
-    addLog('Restored the 10 example listings.'); currentTab = 'listings'; renderPanel();
+    addLog('Restored the 10 example listings.'); currentTab = 'listings'; refreshPhotoCounts(); renderPanel();
   }
   else if (act === 'save-settings') {
     const s = loadSettings();
@@ -995,7 +1226,8 @@ function boot() {
   // Never run inside iframes.
   try { if (window.top !== window.self) return; } catch (e) { return; }
   buildPanel();
-  addLog('Locksmith Poster ready (standalone v1.0.0). ' +
+  refreshPhotoCounts();
+  addLog('Locksmith Poster ready (standalone v1.1.0). ' +
     (loadSettings().autoPublish ? 'Mode: Fill + Publish.' : 'Mode: Fill-only dry-run — safe to test.'));
   const q = loadQueue();
   if (q.running && q.items.length && q.index < q.items.length) {
@@ -1007,8 +1239,9 @@ function boot() {
 // Debug/test handle (read-only helpers + state). Harmless in production.
 try {
   window.LMP = {
-    version: '1.0.0', spinText, applyTokens, renderListing, pickPrice,
-    seedListings, loadListings, loadSettings, CITIES, ALL_SERVICES
+    version: '1.1.0', spinText, applyTokens, renderListing, pickPrice,
+    seedListings, loadListings, loadSettings, CITIES, ALL_SERVICES,
+    photoStoreAvailable, resolveListingPhotoFiles, getStoredPhotos, storePhotos
   };
 } catch (e) {}
 
