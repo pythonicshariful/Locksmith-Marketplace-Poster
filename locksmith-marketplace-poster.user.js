@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Locksmith Marketplace Poster (Standalone)
 // @namespace    https://locksmith-marketplace-poster.local
-// @version      1.1.2
+// @version      1.1.3
 // @description  Standalone Facebook Marketplace auto-listing panel for locksmith services. No server needed: listings, variation, schedule and queue all live in Tampermonkey storage; photos can be uploaded from your computer (stored in the browser) or given as image links. Fill-only dry-run mode included for safe live testing.
 // @author       Shariful Islam
 // @match        https://www.facebook.com/marketplace/*
@@ -14,7 +14,7 @@
 // @run-at       document-idle
 // ==/UserScript==
 /*
- * Locksmith Marketplace Poster — STANDALONE v1.1.2
+ * Locksmith Marketplace Poster — STANDALONE v1.1.3
  * -------------------------------------------------
  * Built for hammadsolomon (Fiverr order FO5234353C085, $200 one-time).
  * Requirements covered:
@@ -44,6 +44,13 @@
  *    FIRST suggestion row with a full pointer/mouse sequence, verifies
  *    the listbox closed, and falls back to a plain click, then to
  *    ArrowDown + Enter.
+ *  - v1.1.3 fixes Category/Condition dropdowns from the live DOM the
+ *    user sent (label[role="combobox"] + dialog[aria-label="Dropdown
+ *    menu"] of div[role="button"] rows): the combobox is found via
+ *    aria-labelledby, the option is matched by its FIRST name span
+ *    (subtitles like "Shipping available" ignored), group headers are
+ *    never clicked, search-typing is scoped inside the dialog only,
+ *    selection is verified, and a miss logs every available option.
  *
  * LIVE-TEST STATUS: local syntax + logic tests pass. Facebook form
  * selectors have NOT been verified against a live logged-in Marketplace
@@ -724,41 +731,143 @@ async function fillTextField(labels, value, settings, fieldName) {
   return true;
 }
 
+/* ---- Dropdowns (Category / Condition) ----
+ * Live DOM (Nov 14): the field is a <label role="combobox"
+ * aria-labelledby="<id of the 'Category' span>" aria-expanded>.
+ * Clicking it opens a <div role="dialog" aria-label="Dropdown menu">
+ * whose clickable rows are <div role="button">. Each row's name is the
+ * FIRST span[dir="auto"] inside it; some rows add a second span with a
+ * subtitle ("Shipping available") that must be ignored. Group headers
+ * ("Home & Garden", ...) are plain divs, not buttons, so they are
+ * never clicked. */
+function comboboxScore(el, labels) {
+  const parts = fieldLabelText(el);
+  let own = '';
+  try { own = allText(el).toLowerCase(); } catch (e) {}
+  let best = 0;
+  for (const label of labels) {
+    const want = label.toLowerCase();
+    if (parts.labelledby === want || parts.aria === want) best = Math.max(best, 100);
+    if (parts.labelledby.includes(want) || parts.aria.includes(want)) best = Math.max(best, 50);
+    if (own === want) best = Math.max(best, 90);
+    if (own.startsWith(want + ' ')) best = Math.max(best, 80);
+  }
+  return best;
+}
+function findCombobox(labels) {
+  const cands = Array.from(document.querySelectorAll('[role="combobox"]'))
+    .filter(el => !inPanel(el) && visible(el));
+  let bestEl = null, bestScore = 0;
+  for (const el of cands) {
+    const s = comboboxScore(el, labels);
+    if (s > bestScore) { bestScore = s; bestEl = el; }
+  }
+  if (bestEl) return bestEl;
+  // Fallback: a plain button/label whose whole text is the field name.
+  const others = Array.from(document.querySelectorAll('[role="button"], label'))
+    .filter(el => !inPanel(el) && visible(el));
+  for (const el of others) {
+    const t = allText(el).toLowerCase();
+    if (labels.some(l => t === l.toLowerCase())) return el;
+  }
+  return null;
+}
+function dropdownDialog() {
+  const dialogs = Array.from(document.querySelectorAll('[role="dialog"]'))
+    .filter(d => !inPanel(d) && visible(d) &&
+      (d.getAttribute('aria-label') || '').toLowerCase().includes('dropdown'));
+  if (dialogs.length) return dialogs[0];
+  const menus = Array.from(document.querySelectorAll('[role="menu"], [role="listbox"]'))
+    .filter(d => !inPanel(d) && visible(d));
+  return menus[0] || null;
+}
+function optionTitleText(opt) {
+  try {
+    const spans = opt.querySelectorAll('span[dir="auto"]');
+    for (const s of spans) {
+      const t = allText(s);
+      if (t) return t;
+    }
+  } catch (e) {}
+  return allText(opt);
+}
+function findDropdownOption(dialog, optionText) {
+  const want = optionText.toLowerCase().trim();
+  const scope = dialog || document;
+  const opts = Array.from(scope.querySelectorAll('[role="option"], [role="menuitem"], [role="button"]'))
+    .filter(o => !inPanel(o) && visible(o) && o.getAttribute('aria-disabled') !== 'true');
+  let includesHit = null;
+  for (const o of opts) {
+    const title = optionTitleText(o).toLowerCase();
+    if (title === want) return o;
+    if (!includesHit && title.includes(want)) includesHit = o;
+  }
+  return includesHit;
+}
+function listDropdownOptions(dialog) {
+  try {
+    const scope = dialog || document;
+    return Array.from(scope.querySelectorAll('[role="button"]'))
+      .filter(o => !inPanel(o) && visible(o))
+      .map(o => optionTitleText(o)).filter(Boolean).slice(0, 30);
+  } catch (e) { return []; }
+}
 async function selectFromDropdown(labels, optionText, fieldName) {
   if (!optionText) return true; // optional field, nothing to select
-  const trigger = await waitFor(() => {
-    const cands = Array.from(document.querySelectorAll('[role="combobox"], [role="button"], label, div'));
-    for (const el of cands) {
-      if (inPanel(el) || !visible(el)) continue;
-      const t = allText(el).toLowerCase();
-      const aria = (el.getAttribute('aria-label') || '').toLowerCase();
-      if (labels.some(l => t === l.toLowerCase() || aria === l.toLowerCase() ||
-          t.startsWith(l.toLowerCase() + ' ') || aria.startsWith(l.toLowerCase()))) return el;
-    }
-    return null;
-  }, 8000);
+  const want = optionText.toLowerCase().trim();
+  const trigger = await waitFor(() => findCombobox(labels), 8000);
   if (!trigger) { addLog('Dropdown not found: ' + fieldName + ' — left for manual selection.', 'warn'); return false; }
+  // Already selected? The combobox text becomes "Category <value>".
+  if (trigger.getAttribute('aria-expanded') !== 'true' && allText(trigger).toLowerCase().includes(want)) {
+    addLog(fieldName + ' already set: ' + optionText);
+    return true;
+  }
   try { trigger.scrollIntoView({ block: 'center' }); } catch (e) {}
   trigger.click();
   await randDelay(700, 1300);
-  // Type into the dropdown search box if one appeared.
-  const search = findInputByLabels(['search', 'category', 'condition']);
-  if (search && visible(search)) { await humanType(search, optionText, loadSettings()); await randDelay(700, 1200); }
-  const option = await waitFor(() => {
-    const opts = Array.from(document.querySelectorAll('[role="option"], [role="menuitem"], li, div[role="button"]'))
-      .filter(o => !inPanel(o));
-    const want = optionText.toLowerCase().trim();
-    return opts.find(o => visible(o) && allText(o).toLowerCase() === want) ||
-      opts.find(o => visible(o) && allText(o).toLowerCase().includes(want)) || null;
-  }, 6000);
-  if (!option) {
-    addLog('Option "' + optionText + '" not found for ' + fieldName + ' — left for manual selection.', 'warn');
-    document.body.click(); await sleep(300); return false;
+  if (trigger.getAttribute('aria-expanded') === 'false') {
+    // Some comboboxes open on keyboard activation instead of click.
+    try { trigger.focus(); } catch (e) {}
+    trigger.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+    await sleep(900);
   }
-  option.click();
-  await randDelay(500, 900);
-  addLog('Selected ' + fieldName + ': ' + optionText);
-  return true;
+  const dialog = await waitFor(() => dropdownDialog(), 6000);
+  if (dialog) {
+    // Only type into a search box INSIDE the dialog. Never into the
+    // page's own search box (an earlier version could do that).
+    try {
+      const search = dialog.querySelector('input');
+      if (search && visible(search)) {
+        await humanType(search, optionText, loadSettings());
+        await randDelay(700, 1200);
+      }
+    } catch (e) {}
+  }
+  const option = await waitFor(() => findDropdownOption(dialog, optionText), 6000);
+  if (!option) {
+    const available = listDropdownOptions(dialog);
+    addLog('Option "' + optionText + '" not found for ' + fieldName +
+      (available.length ? ' — available: ' + available.join(', ') : ' — no options seen') +
+      ' — left for manual selection.', 'warn');
+    try { document.body.click(); } catch (e) {}
+    await sleep(300);
+    return false;
+  }
+  try { option.scrollIntoView({ block: 'center' }); } catch (e) {}
+  await clickOptionRow(option);
+  await sleep(1000);
+  if (!dropdownDialog() || allText(trigger).toLowerCase().includes(want)) {
+    addLog('Selected ' + fieldName + ': ' + optionText);
+    return true;
+  }
+  try { option.click(); } catch (e) {}
+  await sleep(800);
+  if (!dropdownDialog() || allText(trigger).toLowerCase().includes(want)) {
+    addLog('Selected ' + fieldName + ': ' + optionText);
+    return true;
+  }
+  addLog('Clicked "' + optionText + '" for ' + fieldName + ' but selection did not stick — check it on screen.', 'warn');
+  return false;
 }
 
 /* Location suggestions: a ul[role="listbox"] whose rows are
@@ -1158,7 +1267,7 @@ function buildPanel() {
   panel.id = 'lmp-panel';
   panel.innerHTML =
     '<div id="lmp-head"><h1>🔑 Locksmith Marketplace Poster</h1>' +
-    '<p>Standalone v1.1.2 &nbsp;•&nbsp; No server &nbsp;•&nbsp; Account: this Chrome profile\'s logged-in Facebook account</p></div>' +
+    '<p>Standalone v1.1.3 &nbsp;•&nbsp; No server &nbsp;•&nbsp; Account: this Chrome profile\'s logged-in Facebook account</p></div>' +
     '<div class="lmp-tabs">' +
     '<button class="lmp-tab" data-tab="listings">Listings</button>' +
     '<button class="lmp-tab" data-tab="queue">Queue</button>' +
@@ -1480,7 +1589,7 @@ function boot() {
   try { if (window.top !== window.self) return; } catch (e) { return; }
   buildPanel();
   refreshPhotoCounts();
-  addLog('Locksmith Poster ready (standalone v1.1.2). ' +
+  addLog('Locksmith Poster ready (standalone v1.1.3). ' +
     (loadSettings().autoPublish ? 'Mode: Fill + Publish.' : 'Mode: Fill-only dry-run — safe to test.'));
   const q = loadQueue();
   if (q.running && q.items.length && q.index < q.items.length) {
@@ -1492,10 +1601,11 @@ function boot() {
 // Debug/test handle (read-only helpers + state). Harmless in production.
 try {
   window.LMP = {
-    version: '1.1.2', spinText, applyTokens, renderListing, pickPrice,
+    version: '1.1.3', spinText, applyTokens, renderListing, pickPrice,
     seedListings, loadListings, loadSettings, CITIES, ALL_SERVICES,
     photoStoreAvailable, resolveListingPhotoFiles, getStoredPhotos, storePhotos,
-    findInputByLabels, humanType, setEditableText, logFieldDiagnostics, setLocation
+    findInputByLabels, humanType, setEditableText, logFieldDiagnostics, setLocation,
+    selectFromDropdown, findCombobox, dropdownDialog
   };
 } catch (e) {}
 
