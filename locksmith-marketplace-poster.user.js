@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Locksmith Marketplace Poster (Standalone)
 // @namespace    https://locksmith-marketplace-poster.local
-// @version      1.1.3
+// @version      1.1.4
 // @description  Standalone Facebook Marketplace auto-listing panel for locksmith services. No server needed: listings, variation, schedule and queue all live in Tampermonkey storage; photos can be uploaded from your computer (stored in the browser) or given as image links. Fill-only dry-run mode included for safe live testing.
 // @author       Shariful Islam
 // @match        https://www.facebook.com/marketplace/*
@@ -14,7 +14,7 @@
 // @run-at       document-idle
 // ==/UserScript==
 /*
- * Locksmith Marketplace Poster — STANDALONE v1.1.3
+ * Locksmith Marketplace Poster — STANDALONE v1.1.4
  * -------------------------------------------------
  * Built for hammadsolomon (Fiverr order FO5234353C085, $200 one-time).
  * Requirements covered:
@@ -51,6 +51,13 @@
  *    (subtitles like "Shipping available" ignored), group headers are
  *    never clicked, search-typing is scoped inside the dialog only,
  *    selection is verified, and a miss logs every available option.
+ *  - v1.1.4 adds UI dropdowns for Category/Condition (real Facebook
+ *    names from the live dialog, plus a custom-name override), logs a
+ *    visible warning when Category/Condition is blank instead of
+ *    skipping silently, and behaves more human-like: hover + jittered
+ *    pointer sequences on option clicks and random pauses between
+ *    fill steps. The queue already auto-posts one listing after
+ *    another with a random delay inside the Settings interval.
  *
  * LIVE-TEST STATUS: local syntax + logic tests pass. Facebook form
  * selectors have NOT been verified against a live logged-in Marketplace
@@ -102,6 +109,40 @@ const SERVICES = {
   ]
 };
 const ALL_SERVICES = Object.values(SERVICES).flat();
+
+/* Facebook category names, copied exactly from the live Category
+ * dropdown dialog (Nov 14) — casing included. The editor and Settings
+ * offer these as dropdowns so nobody has to type exact names by hand.
+ * A custom-name text box next to each dropdown wins over the list. */
+const FB_CATEGORIES = [
+  'Tools', 'Furniture', 'Household', 'Garden', 'Appliances',
+  'Video Games', 'Books, Movies & Music',
+  'Bags & Luggage', "Women's clothing & shoes", "Men's clothing & shoes",
+  'Jewelry & Accessories',
+  'Health & beauty', 'Pet Supplies', 'Baby & kids', 'Toys & Games',
+  'Electronics & computers', 'Mobile phones',
+  'Bicycles', 'Arts & Crafts', 'Sports & Outdoors', 'Auto parts',
+  'Musical Instruments', 'Antiques & Collectibles',
+  'Garage Sale', 'Miscellaneous', 'Vehicles'
+];
+/* Standard Facebook condition names — NOT yet verified against the
+ * live Condition dialog. If a name misses, the Log lists the real
+ * option names from the dialog; type the exact one in the custom box. */
+const FB_CONDITIONS = ['New', 'Used - Like New', 'Used - Good', 'Used - Fair'];
+
+function dropdownOpts(list, current, blankLabel) {
+  let h = '<option value="">' + esc(blankLabel || '— Skip —') + '</option>';
+  const seen = {};
+  list.forEach(v => {
+    seen[v] = true;
+    h += '<option value="' + esc(v) + '"' + (v === current ? ' selected' : '') + '>' + esc(v) + '</option>';
+  });
+  // Preserve a previously typed custom value as its own option.
+  if (current && !seen[current]) {
+    h += '<option value="' + esc(current) + '" selected>' + esc(current) + '</option>';
+  }
+  return h;
+}
 
 const DEFAULT_SETTINGS = {
   intervalMinSec: 180,
@@ -823,6 +864,7 @@ async function selectFromDropdown(labels, optionText, fieldName) {
     return true;
   }
   try { trigger.scrollIntoView({ block: 'center' }); } catch (e) {}
+  await randDelay(300, 800);
   trigger.click();
   await randDelay(700, 1300);
   if (trigger.getAttribute('aria-expanded') === 'false') {
@@ -905,6 +947,14 @@ async function clickOptionRow(opt) {
   let rect = { left: 0, top: 0, width: 0, height: 0 };
   try { rect = target.getBoundingClientRect() || rect; } catch (e) {}
   const x = rect.left + rect.width / 2, y = rect.top + rect.height / 2;
+  // Human-like approach: hover near the row first, with jitter and a
+  // random pause, instead of teleporting straight to a click.
+  await randDelay(150, 500);
+  const jx = x + randInt(-8, 8), jy = y + randInt(-4, 4);
+  for (const type of ['mousemove', 'mouseover']) {
+    try { target.dispatchEvent(new ME(type, { bubbles: true, cancelable: true, clientX: jx, clientY: jy })); } catch (e) {}
+    await randDelay(40, 110);
+  }
   const seq = [['pointerdown', PE], ['mousedown', ME], ['pointerup', PE], ['mouseup', ME], ['click', ME]];
   for (const pair of seq) {
     try {
@@ -912,7 +962,7 @@ async function clickOptionRow(opt) {
     } catch (e) {
       try { target.dispatchEvent(new Event(pair[0], { bubbles: true })); } catch (e2) {}
     }
-    await sleep(60);
+    await randDelay(40, 110);
   }
   return target;
 }
@@ -1046,13 +1096,20 @@ async function fillListingForm(listing, rendered, settings) {
   logFieldDiagnostics();
   // Photos first — Facebook validates the form as uploads finish.
   const photos = await uploadPhotos(listing, settings);
+  await randDelay(500, 1200);
   await fillTextField(['title', 'listing title'], rendered.title, settings, 'Title');
+  await randDelay(400, 1000);
   if (rendered.price) await fillTextField(['price'], rendered.price, settings, 'Price');
   const category = listing.category || settings.categoryDefault;
   if (category) await selectFromDropdown(['category'], category, 'Category');
+  else addLog('Category not set — skipped. Pick one in Edit or Settings (Default category).', 'warn');
+  await randDelay(400, 1000);
   const condition = listing.condition || settings.conditionDefault;
   if (condition) await selectFromDropdown(['condition', 'item condition'], condition, 'Condition');
+  else addLog('Condition not set — skipped. Pick one in Edit or Settings (Default condition).', 'warn');
+  await randDelay(400, 1000);
   await fillTextField(['description', 'item description'], rendered.description, settings, 'Description');
+  await randDelay(400, 1000);
   await setLocation(rendered.city, settings);
   return { photos };
 }
@@ -1267,7 +1324,7 @@ function buildPanel() {
   panel.id = 'lmp-panel';
   panel.innerHTML =
     '<div id="lmp-head"><h1>🔑 Locksmith Marketplace Poster</h1>' +
-    '<p>Standalone v1.1.3 &nbsp;•&nbsp; No server &nbsp;•&nbsp; Account: this Chrome profile\'s logged-in Facebook account</p></div>' +
+    '<p>Standalone v1.1.4 &nbsp;•&nbsp; No server &nbsp;•&nbsp; Account: this Chrome profile\'s logged-in Facebook account</p></div>' +
     '<div class="lmp-tabs">' +
     '<button class="lmp-tab" data-tab="listings">Listings</button>' +
     '<button class="lmp-tab" data-tab="queue">Queue</button>' +
@@ -1372,8 +1429,10 @@ function editorHtml() {
     '<div><div class="lmp-label">Price vary ± ($)</div><input id="f-vary" class="lmp-input" type="number" value="' + esc(v.priceVary) + '"></div></div>';
   h += '<div class="lmp-label">Title template — use {a|b} + {city} {service}</div><textarea id="f-title" class="lmp-textarea">' + esc(v.titleTemplate) + '</textarea>';
   h += '<div class="lmp-label">Description template — use {a|b} + {city} {service}</div><textarea id="f-desc" class="lmp-textarea" style="min-height:110px">' + esc(v.descriptionTemplate) + '</textarea>';
-  h += '<div class="lmp-row"><div><div class="lmp-label">Category (exact FB name, optional)</div><input id="f-cat" class="lmp-input" value="' + esc(v.category) + '" placeholder="Leave blank to skip"></div>' +
-    '<div><div class="lmp-label">Condition (optional)</div><input id="f-cond" class="lmp-input" value="' + esc(v.condition) + '" placeholder="Leave blank to skip"></div></div>';
+  h += '<div class="lmp-row"><div><div class="lmp-label">Category</div><select id="f-cat" class="lmp-select">' + dropdownOpts(FB_CATEGORIES, v.category, '— Skip category —') + '</select>' +
+    '<input id="f-cat-custom" class="lmp-input" style="margin-top:4px" placeholder="Or type exact FB name (wins over the list)"></div>' +
+    '<div><div class="lmp-label">Condition</div><select id="f-cond" class="lmp-select">' + dropdownOpts(FB_CONDITIONS, v.condition, '— Skip condition —') + '</select>' +
+    '<input id="f-cond-custom" class="lmp-input" style="margin-top:4px" placeholder="Or type exact FB name (wins over the list)"></div></div>';
   h += '<div class="lmp-label">Photos — upload from this computer (recommended)</div>';
   h += '<input id="f-upload" class="lmp-input" type="file" accept="image/*" multiple>';
   h += '<div id="lmp-pending"></div><div id="lmp-thumbs"></div>';
@@ -1405,8 +1464,10 @@ function settingsHtml() {
   h += '<div class="lmp-row"><div><div class="lmp-label">Max per run</div><input id="s-maxrun" class="lmp-input" type="number" value="' + s.maxPerRun + '"></div>' +
     '<div><div class="lmp-label">Max images</div><input id="s-maximg" class="lmp-input" type="number" value="' + s.maxImages + '"></div></div>';
   h += '<label><input type="checkbox" id="s-stoperr"' + (s.stopOnError ? ' checked' : '') + '> Stop queue on first error</label><br><br>';
-  h += '<div class="lmp-label">Default category (optional)</div><input id="s-cat" class="lmp-input" value="' + esc(s.categoryDefault) + '">';
-  h += '<div class="lmp-label">Default condition (optional)</div><input id="s-cond" class="lmp-input" value="' + esc(s.conditionDefault) + '">';
+  h += '<div class="lmp-label">Default category (used when a listing has none)</div><select id="s-cat" class="lmp-select">' + dropdownOpts(FB_CATEGORIES, s.categoryDefault, '— Skip category —') + '</select>' +
+    '<input id="s-cat-custom" class="lmp-input" style="margin-top:4px" placeholder="Or type exact FB name (wins over the list)">';
+  h += '<div class="lmp-label">Default condition (used when a listing has none)</div><select id="s-cond" class="lmp-select">' + dropdownOpts(FB_CONDITIONS, s.conditionDefault, '— Skip condition —') + '</select>' +
+    '<input id="s-cond-custom" class="lmp-input" style="margin-top:4px" placeholder="Or type exact FB name (wins over the list)">';
   h += '<button class="lmp-btn lmp-wide" data-act="save-settings">Save settings</button>';
   h += '<h3 style="margin:16px 0 6px">Backup / restore</h3>';
   h += '<button class="lmp-btn lmp-secondary" data-act="export">Export listings (JSON)</button>' +
@@ -1517,8 +1578,8 @@ function handleAction(act, body) {
       price: Number(document.getElementById('f-price').value) || 0,
       priceVary: Number(document.getElementById('f-vary').value) || 0,
       titleTemplate: title, descriptionTemplate: desc,
-      category: document.getElementById('f-cat').value.trim(),
-      condition: document.getElementById('f-cond').value.trim(),
+      category: document.getElementById('f-cat-custom').value.trim() || document.getElementById('f-cat').value,
+      condition: document.getElementById('f-cond-custom').value.trim() || document.getElementById('f-cond').value,
       images, enabled: true
     };
     const wasEdit = !!editingId;
@@ -1561,8 +1622,8 @@ function handleAction(act, body) {
     s.maxPerRun = Math.max(1, Number(document.getElementById('s-maxrun').value) || 10);
     s.maxImages = Math.max(1, Math.min(20, Number(document.getElementById('s-maximg').value) || 10));
     s.stopOnError = document.getElementById('s-stoperr').checked;
-    s.categoryDefault = document.getElementById('s-cat').value.trim();
-    s.conditionDefault = document.getElementById('s-cond').value.trim();
+    s.categoryDefault = document.getElementById('s-cat-custom').value.trim() || document.getElementById('s-cat').value;
+    s.conditionDefault = document.getElementById('s-cond-custom').value.trim() || document.getElementById('s-cond').value;
     saveSettings(s); addLog('Settings saved. Auto-publish: ' + (s.autoPublish ? 'ON' : 'OFF')); renderPanel();
   }
   else if (act === 'export') {
@@ -1589,7 +1650,7 @@ function boot() {
   try { if (window.top !== window.self) return; } catch (e) { return; }
   buildPanel();
   refreshPhotoCounts();
-  addLog('Locksmith Poster ready (standalone v1.1.3). ' +
+  addLog('Locksmith Poster ready (standalone v1.1.4). ' +
     (loadSettings().autoPublish ? 'Mode: Fill + Publish.' : 'Mode: Fill-only dry-run — safe to test.'));
   const q = loadQueue();
   if (q.running && q.items.length && q.index < q.items.length) {
@@ -1601,8 +1662,9 @@ function boot() {
 // Debug/test handle (read-only helpers + state). Harmless in production.
 try {
   window.LMP = {
-    version: '1.1.3', spinText, applyTokens, renderListing, pickPrice,
+    version: '1.1.4', spinText, applyTokens, renderListing, pickPrice,
     seedListings, loadListings, loadSettings, CITIES, ALL_SERVICES,
+    FB_CATEGORIES, FB_CONDITIONS, dropdownOpts,
     photoStoreAvailable, resolveListingPhotoFiles, getStoredPhotos, storePhotos,
     findInputByLabels, humanType, setEditableText, logFieldDiagnostics, setLocation,
     selectFromDropdown, findCombobox, dropdownDialog

@@ -1,15 +1,15 @@
 # Locksmith Marketplace Poster — Standalone (Tampermonkey)
 
-**Version 1.1.3 — for hammadsolomon (Fiverr order FO5234353C085)**
+**Version 1.1.4 — for hammadsolomon (Fiverr order FO5234353C085)**
 
 A standalone Tampermonkey userscript that fills and posts Facebook Marketplace
 listings for locksmith services from a side panel. **No server, no Python, no
 Flask.** Listings, settings, queue and variation history all live in
 Tampermonkey storage in the browser.
 
-> **Live-test status: FIRST LIVE TEST DONE Nov 12 — FIELDS FAILED, FIXED
-> IN v1.1.1, LOCATION FIXED IN v1.1.2, CATEGORY FIXED IN v1.1.3, RETEST
-> PENDING.** The first live run (v1.1.0) reported "Field not found:
+> **Live-test status: CATEGORY STILL NOT SELECTING (Nov 14) — v1.1.4
+> ADDS UI DROPDOWNS + VISIBLE SKIP WARNINGS, LIVE BROWSER CHECK STILL
+> NEEDED.** The first live run (v1.1.0) reported "Field not found:
 > Description" and left Title/Price empty — the finder only looked for
 > plain inputs/textareas, while Facebook's Description is a rich-text
 > (Lexical) editor. v1.1.1 matches contenteditable editors,
@@ -21,9 +21,16 @@ Tampermonkey storage in the browser.
 > Category/Condition from the live combobox + dropdown-dialog DOM: the
 > combobox is found via aria-labelledby, the option is matched by its
 > first name span (subtitles ignored, headers never clicked), and a
-> miss logs every available option name. Fixes are harness-tested but
-> **not yet re-verified live** — run the Fill-only dry-run (Step 3
-> below) and check the Log tab before auto-publish.
+> miss logs every available option name. v1.1.4: Category/Condition
+> are now dropdowns in Edit + Settings (26 real Facebook category
+> names from the live dialog, custom-name override box), a blank
+> Category/Condition now logs a visible warning instead of skipping
+> silently, and clicks/pauses are more human-like. A second
+> view-source file (Nov 14) again contained NO rendered DOM — only JS
+> bundle names — so it cannot settle the selectors; a live browser
+> session on the test account is the remaining step. Fixes are
+> harness-tested but **not yet re-verified live** — run the Fill-only
+> dry-run (Step 3 below) and check the Log tab before auto-publish.
 
 ## What it does
 
@@ -175,12 +182,14 @@ selectors. Instead, do one of these on the create page:
 
 ## What was tested (Nov 12, 2026)
 
-- `node --check` — syntax OK (1,615 lines, ~83 KB).
+- `node --check` — syntax OK (1,677 lines, ~87 KB).
 - Logic harness (19 checks, all pass): 10 seed listings, 40 services,
-  7 cities, spintax variation, token replacement, price within range
-  and rounded to $5, used-combination avoidance, safe defaults
-  (auto-publish OFF, interval 180–300s), plus photo-resolution soft
-  failure without IndexedDB (empty result, no throw).
+  7 cities, 26 FB categories + 4 conditions, dropdown option builder
+  (blank first, custom value preserved), spintax variation, token
+  replacement, price within range and rounded to $5,
+  used-combination avoidance, safe defaults (auto-publish OFF,
+  interval 180–300s), plus photo-resolution soft failure without
+  IndexedDB (empty result, no throw).
 - Fake-IndexedDB harness (7 checks, all pass): store 2 photos, non-image
   filtered out, read-back with names, resolve to File objects with
   names/types preserved.
@@ -206,13 +215,17 @@ selectors. Instead, do one of these on the create page:
   button after the async photo-count refresh.
 - **Live:** v1.1.0 first live test Nov 12 FAILED on fields (Description
   not found, Title/Price empty; photo preview did appear, suggesting
-  attach worked). v1.1.1–v1.1.3 fixes are harness-tested only — live
-  re-verification of fill, location selection, category selection,
-  attach, Publish and Renew is still open (Step 3 above). Photo
-  copy/delete on Duplicate/Delete share the tested IndexedDB patterns
-  but were not individually harness-tested.
+  attach worked). Nov 14: category still not selecting (cause
+  unverified — blank category skipping silently is one candidate;
+  v1.1.4 makes the skip visible). v1.1.1–v1.1.4 fixes are
+  harness-tested only — live re-verification of fill, location
+  selection, category selection, attach, Publish and Renew is still
+  open (Step 3 above, or a live browser session on the test account).
+  Condition option names are the standard Facebook names, unverified
+  live. Photo copy/delete on Duplicate/Delete share the tested
+  IndexedDB patterns but were not individually harness-tested.
 
 ## Files
 
-- `locksmith-marketplace-poster.user.js` — the script (v1.1.3).
+- `locksmith-marketplace-poster.user.js` — the script (v1.1.4).
 - `README.md` — this file.
