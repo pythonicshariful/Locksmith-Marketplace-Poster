@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Locksmith Marketplace Poster (Standalone)
 // @namespace    https://locksmith-marketplace-poster.local
-// @version      1.1.6
+// @version      1.1.7
 // @description  Standalone Facebook Marketplace auto-listing panel for locksmith services. No server needed: listings, variation, schedule and queue all live in Tampermonkey storage; photos can be uploaded from your computer (stored in the browser) or given as image links. Fill-only dry-run mode included for safe live testing.
 // @author       Shariful Islam
 // @match        https://www.facebook.com/marketplace/*
@@ -14,7 +14,7 @@
 // @run-at       document-idle
 // ==/UserScript==
 /*
- * Locksmith Marketplace Poster — STANDALONE v1.1.6
+ * Locksmith Marketplace Poster — STANDALONE v1.1.7
  * -------------------------------------------------
  * Built for hammadsolomon (Fiverr order FO5234353C085, $200 one-time).
  * Requirements covered:
@@ -78,6 +78,12 @@
  *    form, and idles there until the next listing is due (the queue
  *    resume honours the planned wait). Fill-only mode is unchanged:
  *    it still stops after filling and never clicks Next/Publish.
+ *  - v1.1.7 adds a live Console tab (replaces the Log tab): every
+ *    log line is printed to the UI as it happens, oldest-first with
+ *    auto-scroll, plus a next-post countdown that ticks every
+ *    second in the Console header, the Queue tab and the always-
+ *    visible status bar. The status bar also shows the latest log
+ *    line. Log history kept in storage grows from 100 to 200 lines.
  *
  * LIVE-TEST STATUS: local syntax + logic tests pass. Facebook form
  * selectors have NOT been verified against a live logged-in Marketplace
@@ -278,21 +284,30 @@ function nowTime() { return new Date().toLocaleTimeString(); }
 
 /* ============================== LOG ================================= */
 
-let logEl = null;
+const LOG_KEEP = 200;
 function addLog(msg, kind) {
   const line = { t: nowTime(), msg: String(msg), kind: kind || 'info' };
   const log = storeGet(STORE.log, []);
   log.push(line);
-  storeSet(STORE.log, log.slice(-100));
-  if (logEl) {
-    const div = document.createElement('div');
-    div.className = 'lmp-logline lmp-' + line.kind;
-    div.textContent = '[' + line.t + '] ' + line.msg;
-    if (typeof logEl.prepend === 'function') logEl.prepend(div);
-    else logEl.appendChild(div);
-  }
+  storeSet(STORE.log, log.slice(-LOG_KEEP));
+  // Live console: append the line to the UI as it happens (looked up
+  // fresh each time, so panel re-renders never leave a stale handle).
+  try {
+    const cEl = document.getElementById('lmp-console');
+    if (cEl) {
+      // Only follow the tail when the user is already near the bottom —
+      // never yank the view away while they scroll up to read.
+      const nearBottom = cEl.scrollHeight - cEl.scrollTop - (cEl.clientHeight || 0) < 60;
+      const div = document.createElement('div');
+      div.className = 'lmp-logline lmp-' + line.kind;
+      div.textContent = '[' + line.t + '] ' + line.msg;
+      cEl.appendChild(div);
+      while (cEl.children.length > LOG_KEEP) cEl.removeChild(cEl.children[0]);
+      if (nearBottom) cEl.scrollTop = cEl.scrollHeight;
+    }
+  } catch (e) {}
   const statusEl = document.getElementById('lmp-status-text');
-  if (statusEl) statusEl.textContent = line.msg;
+  if (statusEl) { statusEl.textContent = line.msg; statusEl.title = line.msg; }
 }
 
 /* ==================== SPINTAX + VARIATION =========================== */
@@ -1285,6 +1300,33 @@ async function returnToCreateForm(q, settings, testDelayMs) {
   location.href = CREATE_ITEM_URL;
 }
 
+/* Next-post countdown: shown in the Console header, the Queue tab
+ * and the always-visible status bar, ticking every second. */
+function formatCountdown(ms) {
+  const total = Math.max(0, Math.ceil(ms / 1000));
+  const s = total % 60, m = Math.floor(total / 60) % 60, h = Math.floor(total / 3600);
+  const p = n => String(n).padStart(2, '0');
+  return h > 0 ? h + ':' + p(m) + ':' + p(s) : p(m) + ':' + p(s);
+}
+function countdownText(q, now) {
+  if (!q || !q.running || !q.items.length || q.index >= q.items.length) return 'Queue idle';
+  const pos = '  (post ' + (q.index + 1) + '/' + q.items.length + ')';
+  const remaining = (q.nextAt || 0) - (now || Date.now());
+  if (remaining > 0) return 'Next post in ' + formatCountdown(remaining) + pos;
+  return 'Posting…' + pos;
+}
+function updateCountdown() {
+  try {
+    const text = countdownText(loadQueue(), Date.now());
+    document.querySelectorAll('.lmp-countdown').forEach(el => { el.textContent = text; });
+  } catch (e) {}
+}
+let countdownTimer = null;
+function startCountdownTicker() {
+  if (countdownTimer) return;
+  countdownTimer = setInterval(updateCountdown, 1000);
+}
+
 async function runQueueStep() {
   const q = loadQueue();
   if (!q.running) return;
@@ -1360,6 +1402,10 @@ async function runQueueStep() {
 
 function scheduleNextStep(waitMs) {
   stopQueueTimer();
+  // Record the due time so the countdown shows the wait (and a page
+  // reload during the wait resumes with the remaining time, like the
+  // after-publish path). runQueueStep clears it when the step runs.
+  try { const q = loadQueue(); if (q.running) { q.nextAt = Date.now() + waitMs; saveQueue(q); } } catch (e) {}
   queueTimer = setTimeout(() => { runQueueStep(); }, waitMs);
   renderPanel();
 }
@@ -1440,7 +1486,9 @@ const PANEL_CSS = `
 .lmp-tab{flex:1;padding:7px 2px;background:#344054;border:none;border-radius:6px;color:#e6e9ef;font-size:12px;cursor:pointer}
 .lmp-tab.lmp-active{background:#0e9384;font-weight:700}
 #lmp-body{flex:1;overflow-y:auto;padding:10px}
-#lmp-status{padding:9px 12px;background:#1d2939;border-top:1px solid #344054;font-size:12px;min-height:34px}
+#lmp-status{padding:9px 12px;background:#1d2939;border-top:1px solid #344054;font-size:12px;min-height:34px;display:flex;justify-content:space-between;align-items:center;gap:10px}
+#lmp-status-text{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.lmp-countdown{font-weight:700;color:#32d583;white-space:nowrap;font-variant-numeric:tabular-nums}
 .lmp-card{background:#1d2939;border-radius:8px;padding:10px;margin-bottom:8px;border:1px solid transparent}
 .lmp-card.lmp-selected{border-color:#0e9384}
 .lmp-card h3{margin:0 0 4px;font-size:13px}
@@ -1456,8 +1504,12 @@ const PANEL_CSS = `
 .lmp-textarea{min-height:70px;resize:vertical}
 .lmp-label{font-size:11px;color:#98a2b3;font-weight:700;text-transform:uppercase;letter-spacing:.4px}
 .lmp-row{display:flex;gap:8px}.lmp-row>div{flex:1}
-#lmp-log{font-size:11px}
-.lmp-logline{padding:3px 6px;border-bottom:1px solid #1d2939;white-space:pre-wrap;word-break:break-word}
+#lmp-console{background:#0b1220;border:1px solid #344054;border-radius:6px;padding:8px;height:340px;overflow-y:auto;font-family:'JetBrains Mono','Fira Code',ui-monospace,Menlo,Consolas,monospace;font-size:12px;line-height:1.45;font-weight:400}
+.lmp-console-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;gap:8px}
+.lmp-logline{padding:3px 6px 3px 8px;border-bottom:1px solid #1d2939;border-left:3px solid #344054;white-space:pre-wrap;word-break:break-word}
+.lmp-logline:hover{background:#131f33}
+.lmp-logline.lmp-warn{border-left-color:#fdb022}.lmp-logline.lmp-ok{border-left-color:#32d583}.lmp-logline.lmp-error{border-left-color:#f97066}
+.lmp-btn:focus-visible,.lmp-tab:focus-visible{outline:2px solid #2dd4bf;outline-offset:2px}
 .lmp-warn{color:#fdb022}.lmp-ok{color:#32d583}.lmp-error{color:#f97066}
 .lmp-note{font-size:11px;color:#98a2b3;background:#1d2939;border-radius:6px;padding:8px;margin:8px 0}
 .lmp-preview{background:#101828;border:1px dashed #344054;border-radius:6px;padding:8px;font-size:12px;white-space:pre-wrap;margin:6px 0}
@@ -1482,16 +1534,16 @@ function buildPanel() {
   panel.id = 'lmp-panel';
   panel.innerHTML =
     '<div id="lmp-head"><h1>🔑 Locksmith Marketplace Poster</h1>' +
-    '<p>Standalone v1.1.6 &nbsp;•&nbsp; No server &nbsp;•&nbsp; Account: this Chrome profile\'s logged-in Facebook account</p></div>' +
+    '<p>Standalone v1.1.7 &nbsp;•&nbsp; No server &nbsp;•&nbsp; Account: this Chrome profile\'s logged-in Facebook account</p></div>' +
     '<div class="lmp-tabs">' +
     '<button class="lmp-tab" data-tab="listings">Listings</button>' +
     '<button class="lmp-tab" data-tab="queue">Queue</button>' +
     '<button class="lmp-tab" data-tab="edit">Add / Edit</button>' +
     '<button class="lmp-tab" data-tab="renew">Renew</button>' +
     '<button class="lmp-tab" data-tab="settings">Settings</button>' +
-    '<button class="lmp-tab" data-tab="log">Log</button></div>' +
+    '<button class="lmp-tab" data-tab="console">Console</button></div>' +
     '<div id="lmp-body"></div>' +
-    '<div id="lmp-status"><span id="lmp-status-text">Ready.</span></div>';
+    '<div id="lmp-status"><span id="lmp-status-text" role="status" aria-live="polite" aria-atomic="true">Ready.</span><span class="lmp-countdown" aria-hidden="true">Queue idle</span></div>';
   document.body.appendChild(panel);
   const toggle = document.createElement('button');
   toggle.id = 'lmp-toggle'; toggle.textContent = '◀'; toggle.title = 'Show / hide panel';
@@ -1502,8 +1554,8 @@ function buildPanel() {
   });
   document.body.appendChild(toggle);
   panel.querySelectorAll('.lmp-tab').forEach(b => b.addEventListener('click', () => { if (b.dataset.tab !== 'edit') pendingUploadFiles = []; currentTab = b.dataset.tab; renderPanel(); }));
-  logEl = null;
   renderPanel();
+  startCountdownTicker();
 }
 
 function renderPanel() {
@@ -1515,8 +1567,9 @@ function renderPanel() {
   else if (currentTab === 'edit') body.innerHTML = editorHtml();
   else if (currentTab === 'renew') body.innerHTML = renewHtml();
   else if (currentTab === 'settings') body.innerHTML = settingsHtml();
-  else body.innerHTML = logHtml();
+  else body.innerHTML = consoleHtml();
   wirePanel(body);
+  updateCountdown();
 }
 
 function listingsHtml() {
@@ -1555,6 +1608,7 @@ function queueHtml() {
   let h = '<p class="lmp-note">Mode: <b>' + (s.autoPublish ? 'Fill + Publish (auto)' : 'Fill-only dry-run (safe)') +
     '</b> — change it in Settings. Interval: ' + s.intervalMinSec + '–' + s.intervalMaxSec + 's between posts. ' +
     'Max per run: ' + s.maxPerRun + '. The queue survives page changes; keep this tab open.</p>';
+  h += '<p class="lmp-note">⏱ <span class="lmp-countdown" aria-hidden="true">' + esc(countdownText(q, Date.now())) + '</span></p>';
   h += '<div><button class="lmp-btn" data-act="start-queue">▶ Start queue (' + selectedIds.size + ' selected)</button>' +
     '<button class="lmp-btn lmp-danger" data-act="stop-queue">■ Stop</button>' +
     '<button class="lmp-btn lmp-secondary" data-act="reset-queue">Reset</button>' +
@@ -1640,9 +1694,11 @@ function settingsHtml() {
   return h;
 }
 
-function logHtml() {
-  const log = storeGet(STORE.log, []).slice().reverse();
-  let h = '<button class="lmp-btn lmp-secondary" data-act="clear-log">Clear log</button><div id="lmp-log">';
+function consoleHtml() {
+  const log = storeGet(STORE.log, []);
+  let h = '<div class="lmp-console-head"><span class="lmp-countdown" aria-hidden="true">' + esc(countdownText(loadQueue(), Date.now())) + '</span>' +
+    '<button class="lmp-btn lmp-secondary" data-act="clear-log">Clear console</button></div>' +
+    '<div id="lmp-console">';
   log.forEach(line => { h += '<div class="lmp-logline lmp-' + esc(line.kind) + '">[' + esc(line.t) + '] ' + esc(line.msg) + '</div>'; });
   return h + '</div>';
 }
@@ -1650,7 +1706,8 @@ function logHtml() {
 /* ============================ WIRING ================================ */
 
 function wirePanel(body) {
-  logEl = document.getElementById('lmp-log');
+  const cEl = document.getElementById('lmp-console');
+  if (cEl) cEl.scrollTop = cEl.scrollHeight;
   const search = document.getElementById('lmp-search');
   if (search) search.addEventListener('input', () => { searchText = search.value; renderPanel(); const s2 = document.getElementById('lmp-search'); if (s2) { s2.focus(); s2.setSelectionRange(s2.value.length, s2.value.length); } });
   body.querySelectorAll('[data-check]').forEach(cb => cb.addEventListener('change', () => {
@@ -1816,7 +1873,7 @@ function boot() {
   try { if (window.top !== window.self) return; } catch (e) { return; }
   buildPanel();
   refreshPhotoCounts();
-  addLog('Locksmith Poster ready (standalone v1.1.6). ' +
+  addLog('Locksmith Poster ready (standalone v1.1.7). ' +
     (loadSettings().autoPublish ? 'Mode: Fill + Publish.' : 'Mode: Fill-only dry-run — safe to test.'));
   const q = loadQueue();
   if (q.running && q.items.length && q.index < q.items.length) {
@@ -1834,14 +1891,15 @@ function boot() {
 // Debug/test handle (read-only helpers + state). Harmless in production.
 try {
   window.LMP = {
-    version: '1.1.6', spinText, applyTokens, renderListing, pickPrice,
+    version: '1.1.7', spinText, applyTokens, renderListing, pickPrice,
     seedListings, loadListings, loadSettings, CITIES, ALL_SERVICES,
     FB_CATEGORIES, FB_CONDITIONS, FB_AVAILABILITY, dropdownOpts,
     photoStoreAvailable, resolveListingPhotoFiles, getStoredPhotos, storePhotos,
     findInputByLabels, humanType, setEditableText, logFieldDiagnostics, setLocation,
     fillProductTags, selectFromDropdown, findCombobox, dropdownDialog,
     findButtonByText, clickButtonWhenEnabled, publishCurrentListing,
-    planQueueWait, queueResumeDelayMs, returnToCreateForm, CREATE_ITEM_URL
+    planQueueWait, queueResumeDelayMs, returnToCreateForm, CREATE_ITEM_URL,
+    addLog, formatCountdown, countdownText, updateCountdown
   };
 } catch (e) {}
 

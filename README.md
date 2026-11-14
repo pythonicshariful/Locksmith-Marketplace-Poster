@@ -1,14 +1,14 @@
 # Locksmith Marketplace Poster — Standalone (Tampermonkey)
 
-**Version 1.1.6 — for hammadsolomon (Fiverr order FO5234353C085)**
+**Version 1.1.7 — for hammadsolomon (Fiverr order FO5234353C085)**
 
 A standalone Tampermonkey userscript that fills and posts Facebook Marketplace
 listings for locksmith services from a side panel. **No server, no Python, no
 Flask.** Listings, settings, queue and variation history all live in
 Tampermonkey storage in the browser.
 
-> **Live-test status: CATEGORY CONFIRMED WORKING (Nov 14) — v1.1.6
-> FIXES NEXT → PUBLISH + RETURNS TO THE CREATE FORM AFTER PUBLISH.**
+> **Live-test status: CATEGORY CONFIRMED WORKING (Nov 14) — v1.1.7
+> ADDS A LIVE CONSOLE TAB + NEXT-POST COUNTDOWN.**
 > The first
 > live run (v1.1.0) reported "Field not found: Description" and left
 > Title/Price empty — the finder only looked for plain inputs/
@@ -41,17 +41,24 @@ Tampermonkey storage in the browser.
 > successful publish the script waits a few seconds, returns to a
 > fresh create form, and idles there until the next listing is due.
 > Fill-only mode is unchanged: it stops after filling and never
-> clicks Next/Publish. A second view-source file (Nov 14) again
-> contained NO rendered DOM — only JS bundle names — so it cannot
-> settle the selectors. Tags + Availability + the Next → Publish
-> flow are harness-tested but **not yet verified live** — run the
-> Fill-only dry-run (Step 3 below) and check the Log tab before
-> auto-publish.
+> clicks Next/Publish. v1.1.7 replaces the Log tab with a live
+> Console: every log line prints to the UI as it happens
+> (oldest-first, auto-scroll that never yanks the view while
+> reading), with a next-post countdown ticking every second in the
+> Console header, the Queue tab and the always-visible status bar
+> (which also shows the latest line). Console styling follows the
+> UI/UX Pro Max data-dense dashboard guidance (dense mono
+> type, kind-colored markers, one atomic status message). A second
+> view-source file (Nov 14) again contained NO rendered DOM — only
+> JS bundle names — so it cannot settle the selectors. Tags +
+> Availability + the Next → Publish flow are harness-tested but
+> **not yet verified live** — run the Fill-only dry-run (Step 3
+> below) and check the Console tab before auto-publish.
 
 ## What it does
 
 - **Dashboard panel** on every Marketplace page (right side, collapsible):
-  Listings, Queue, Add/Edit, Renew, Settings, Log.
+  Listings, Queue, Add/Edit, Renew, Settings, Console (live log + next-post countdown).
 - **20–50 prepared listings.** Ships with the buyer's own 10 examples as
   templates. Add more in Add/Edit, or Duplicate a template and change the
   city/service.
@@ -103,7 +110,7 @@ computer needs its own upload. Prefer JPGs under ~5 MB each.
 image links** ending in `.jpg` / `.png` / `.webp`, e.g. from your own
 website or an image host that serves the file directly. Google Drive
 "share" links do **not** work as direct images. If a photo cannot be
-downloaded, the Log says so and the listing is skipped for publishing —
+downloaded, the Console says so and the listing is skipped for publishing —
 fix the URL and retry. You can mix uploads and links on one listing.
 
 Without any photos, use Fill-only mode and add photos by hand on
@@ -116,7 +123,7 @@ Facebook before publishing.
    spun title/description look right.
 3. **Start queue** → the create page opens and fills. Check: title,
    price, description, location suggestion, photos.
-4. If a field is wrong or missing, read the Log — it names the field.
+4. If a field is wrong or missing, read the Console — it names the field.
    Fix the template/category text, or fill that field by hand.
 5. Only when one listing fills correctly: Settings → turn **Auto-publish
    ON**, start with 2–3 listings, watch the whole run, then scale up.
@@ -166,7 +173,7 @@ View-source (`view-source:`) does **not** contain the rendered form —
 Facebook builds it with JavaScript, so that file is useless for fixing
 selectors. Instead, do one of these on the create page:
 
-1. **Easiest:** open the panel's **Log** tab after a Fill-only run and
+1. **Easiest:** open the panel's **Console** tab after a Fill-only run and
    screenshot the "Form diagnostics" lines (they list every visible
    field's tag/labels — no values are logged).
 2. **Most precise:** press F12 → Console → paste the snippet below
@@ -192,16 +199,16 @@ selectors. Instead, do one of these on the create page:
 | Symptom | Check |
 |---|---|
 | Panel doesn't appear | Tampermonkey enabled? On `facebook.com/marketplace/*`? Refresh. |
-| "Field not found: Title/Price/…" | Facebook layout changed. Note the field name from the Log; fill by hand for now and report the field + a screenshot. |
-| Photos not attached | Uploaded photos: check the editor still shows thumbnails (site data may have been cleared — re-upload). Links: image URL must be a direct file link and downloadable. Check Log for the failing URL. |
-| "Photo storage unavailable" in Log | IndexedDB is blocked in this browser/profile. Image URLs still work; try another Chrome profile for uploads. |
+| "Field not found: Title/Price/…" | Facebook layout changed. Note the field name from the Console; fill by hand for now and report the field + a screenshot. |
+| Photos not attached | Uploaded photos: check the editor still shows thumbnails (site data may have been cleared — re-upload). Links: image URL must be a direct file link and downloadable. Check the Console for the failing URL. |
+| "Photo storage unavailable" in the Console | IndexedDB is blocked in this browser/profile. Image URLs still work; try another Chrome profile for uploads. |
 | Publish button stayed disabled | Usually missing photos or a required field. Fill-only mode shows what's missing. |
 | Queue stops after 1 listing | Fill-only mode pauses after each fill by design. Turn on Auto-publish in Settings for continuous runs. |
 | Script asks about a host on first photo download | Tampermonkey `@connect *` covers image hosts; allow the request if Tampermonkey prompts. |
 
 ## What was tested (Nov 14, 2026)
 
-- `node --check` — syntax OK (1,851 lines, ~96 KB).
+- `node --check` — syntax OK (1,909 lines, ~100 KB).
 - Logic harness (21 checks, all pass): 10 seed listings, 40 services,
   7 cities, 26 FB categories + 4 conditions + 2 availability options,
   dropdown option builder (blank first, custom value preserved),
@@ -248,22 +255,31 @@ selectors. Instead, do one of these on the create page:
   180–300s wait and resume delay are computed correctly; after a
   publish the script returns to marketplace/create/item and idles
   there until the next listing is due.
+- Console harness (18 checks, all pass, fake DOM): log lines append
+  in order with kind class + timestamp, auto-scroll follows the tail
+  only when already near the bottom (never yanks a scrolled-up view),
+  status bar shows the latest line, console + stored log both cap at
+  200 lines, addLog is safe with no console element, countdown
+  formatting (00:00 / 01:05 / 1:01:01) and all countdown states
+  (idle / waiting / posting), and the 1s ticker updates every
+  countdown element from the stored queue.
 - Panel smoke test (fake DOM): script boots without errors, listings
   render with names, NO PHOTOS badges, uploaded/link counts and queue
   button after the async photo-count refresh.
 - **Live:** v1.1.0 first live test Nov 12 FAILED on fields (Description
   not found, Title/Price empty; photo preview did appear, suggesting
   attach worked). Nov 14: Category selection CONFIRMED WORKING.
-  Product tags + Availability (v1.1.5) and the Next → Publish +
-  return-to-create-form flow (v1.1.6) are harness-tested only — live
-  verification of tags, availability, location selection, attach,
-  Publish and Renew is still open (Step 3 above, or a live browser
-  session on the test account). Condition option names are the
-  standard Facebook names, unverified live. Photo copy/delete on
-  Duplicate/Delete share the tested IndexedDB patterns but were not
-  individually harness-tested.
+  Product tags + Availability (v1.1.5), the Next → Publish +
+  return-to-create-form flow (v1.1.6) and the Console + countdown
+  (v1.1.7) are harness-tested only — live verification of tags,
+  availability, location selection, attach, Publish and Renew is
+  still open (Step 3 above, or a live browser session on the test
+  account). Condition option names are the standard Facebook names,
+  unverified live. Photo copy/delete on Duplicate/Delete share the
+  tested IndexedDB patterns but were not individually
+  harness-tested.
 
 ## Files
 
-- `locksmith-marketplace-poster.user.js` — the script (v1.1.6).
+- `locksmith-marketplace-poster.user.js` — the script (v1.1.7).
 - `README.md` — this file.
