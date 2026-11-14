@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Locksmith Marketplace Poster (Standalone)
 // @namespace    https://locksmith-marketplace-poster.local
-// @version      1.1.9
+// @version      1.1.10
 // @description  Standalone Facebook Marketplace auto-listing panel for locksmith services. No server needed: listings, variation, schedule and queue all live in Tampermonkey storage; photos can be uploaded from your computer (stored in the browser) or given as image links. Fill-only dry-run mode included for safe live testing.
 // @author       Shariful Islam
 // @match        https://www.facebook.com/marketplace/*
@@ -14,7 +14,7 @@
 // @run-at       document-idle
 // ==/UserScript==
 /*
- * Locksmith Marketplace Poster — STANDALONE v1.1.9
+ * Locksmith Marketplace Poster — STANDALONE v1.1.10
  * -------------------------------------------------
  * Built for hammadsolomon (Fiverr order FO5234353C085, $200 one-time).
  * Requirements covered:
@@ -100,6 +100,13 @@
  *    immediately when not already there (the step-level check stays
  *    as a safety net, and now runs before the posting-hours gate so
  *    the queue waits on the create form, not on a random page).
+ *  - v1.1.10 fixes a live bug (Nov 14): isCreatePage matched ANY
+ *    /marketplace/create/* page, so Start pressed on create/vehicle
+ *    filled Location and attached a photo on the VEHICLE form and
+ *    stalled on its disabled Next button. The check now matches
+ *    ONLY /marketplace/create/item (trailing slash allowed), so
+ *    Start/steps navigate away from vehicle and other create pages.
+ *    fillListingForm also refuses to run off the item form.
  *
  * LIVE-TEST STATUS: local syntax + logic tests pass. Facebook form
  * selectors have NOT been verified against a live logged-in Marketplace
@@ -1250,10 +1257,22 @@ async function clickButtonWhenEnabled(texts, timeoutMs, label) {
 
 /* ===================== FILL + PUBLISH + QUEUE ======================= */
 
-function isCreatePage() { return /\/marketplace\/create\//.test(location.pathname); }
+/* Only the ITEM create form counts: /marketplace/create/vehicle and
+ * other create/* pages have different fields, and filling them
+ * corrupts the queue (found live Nov 14: Start on create/vehicle
+ * filled Location + attached a photo on the vehicle form, then
+ * stalled on its disabled Next button). */
+function isCreatePage() { return /^\/marketplace\/create\/item\/?$/.test(location.pathname); }
 function isSellingPage() { return /\/marketplace\/you\/selling/.test(location.pathname); }
 
 async function fillListingForm(listing, rendered, settings) {
+  // Defense in depth: never fill a wrong form, even if a future
+  // caller forgets the page check. The queue marks the item failed
+  // and the next step navigates to the item form.
+  if (!isCreatePage()) {
+    addLog('Refusing to fill: not the item create form (' + location.pathname + ').', 'error');
+    return { photos: { uploaded: 0, total: 0, fromUploads: 0, fromUrls: 0 }, refused: true };
+  }
   addLog('Filling form: ' + rendered.title);
   await expandMoreDetails();
   logFieldDiagnostics();
@@ -1444,6 +1463,11 @@ async function runQueueStep() {
   const rendered = item.rendered || renderListing(listing, loadUsed());
   item.rendered = rendered;
   const fill = await fillListingForm(listing, rendered, settings);
+  if (fill.refused) {
+    item.status = 'failed'; item.note = 'Refused: not the item create form';
+    q.index++; saveQueue(q);
+    return scheduleNextStep(2000);
+  }
   if (settings.autoPublish) {
     if (fill.photos.total > 0 && fill.photos.uploaded === 0) {
       item.status = 'failed'; item.note = 'Photos could not be attached';
@@ -1675,7 +1699,7 @@ function buildPanel() {
   panel.id = 'lmp-panel';
   panel.innerHTML =
     '<div id="lmp-head"><h1>🔑 Locksmith Marketplace Poster</h1>' +
-    '<p>Standalone v1.1.9 &nbsp;•&nbsp; No server &nbsp;•&nbsp; Account: this Chrome profile\'s logged-in Facebook account</p></div>' +
+    '<p>Standalone v1.1.10 &nbsp;•&nbsp; No server &nbsp;•&nbsp; Account: this Chrome profile\'s logged-in Facebook account</p></div>' +
     '<div class="lmp-tabs">' +
     '<button class="lmp-tab" data-tab="listings">Listings</button>' +
     '<button class="lmp-tab" data-tab="queue">Queue</button>' +
@@ -2027,7 +2051,7 @@ function boot() {
   try { if (window.top !== window.self) return; } catch (e) { return; }
   buildPanel();
   refreshPhotoCounts();
-  addLog('Locksmith Poster ready (standalone v1.1.9). ' +
+  addLog('Locksmith Poster ready (standalone v1.1.10). ' +
     (loadSettings().autoPublish ? 'Mode: Fill + Publish.' : 'Mode: Fill-only dry-run — safe to test.'));
   const q = loadQueue();
   if (q.running && q.items.length && q.index < q.items.length) {
@@ -2045,11 +2069,11 @@ function boot() {
 // Debug/test handle (read-only helpers + state). Harmless in production.
 try {
   window.LMP = {
-    version: '1.1.9', spinText, applyTokens, renderListing, pickPrice,
+    version: '1.1.10', spinText, applyTokens, renderListing, pickPrice,
     seedListings, loadListings, loadSettings, CITIES, ALL_SERVICES,
     MAKES, listingMake, FB_CATEGORIES, FB_CONDITIONS, FB_AVAILABILITY, dropdownOpts,
     parseHHMM, inPostingWindow, msUntilWindow, scheduleGateDelayMs,
-    clampPanelWidth, panelWidthFromX, isCreatePage, PANEL_DEFAULT_W,
+    clampPanelWidth, panelWidthFromX, isCreatePage, PANEL_DEFAULT_W, fillListingForm,
     photoStoreAvailable, resolveListingPhotoFiles, getStoredPhotos, storePhotos,
     findInputByLabels, humanType, setEditableText, logFieldDiagnostics, setLocation,
     fillProductTags, selectFromDropdown, findCombobox, dropdownDialog,

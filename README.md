@@ -1,14 +1,14 @@
 # Locksmith Marketplace Poster — Standalone (Tampermonkey)
 
-**Version 1.1.9 — for hammadsolomon (Fiverr order FO5234353C085)**
+**Version 1.1.10 — for hammadsolomon (Fiverr order FO5234353C085)**
 
 A standalone Tampermonkey userscript that fills and posts Facebook Marketplace
 listings for locksmith services from a side panel. **No server, no Python, no
 Flask.** Listings, settings, queue and variation history all live in
 Tampermonkey storage in the browser.
 
-> **Live-test status: CATEGORY CONFIRMED WORKING (Nov 14) — v1.1.9
-> MAKES THE PANEL RESIZABLE + START NAVIGATES TO THE CREATE FORM.**
+> **Live-test status: CATEGORY CONFIRMED WORKING (Nov 14) — v1.1.10
+> FIXES START ON THE VEHICLE FORM (IT NOW GOES TO CREATE/ITEM).**
 > The first
 > live run (v1.1.0) reported "Field not found: Description" and left
 > Title/Price empty — the finder only looked for plain inputs/
@@ -61,12 +61,19 @@ Tampermonkey storage in the browser.
 > persists and the collapse offset + toggle follow it) and makes
 > Start navigate to the create form immediately when not already
 > there — the queue then waits on the create form if posting
-> hours are off-window. A second view-source file (Nov 14) again
-> contained NO rendered DOM — only JS bundle names — so it cannot
-> settle the selectors. Tags + Availability + the Next → Publish
-> flow + the Make/schedule/resize logic are harness-tested but
-> **not yet verified live** — run the Fill-only dry-run (Step 3
-> below) and check the Console tab before auto-publish.
+> hours are off-window. v1.1.10 fixes a bug found live the same
+> day: Start pressed while on create/vehicle did NOT navigate,
+> because the "am I on the create page?" check matched ANY
+> create/* page — the queue filled Location and attached a photo
+> on the VEHICLE form and stalled on its disabled Next button
+> (vehicle type/year empty). The check now matches ONLY
+> create/item, and the fill step refuses to run on any other
+> page. A second view-source file (Nov 14) again contained NO
+> rendered DOM — only JS bundle names — so it cannot settle the
+> selectors. Tags + Availability + the Next → Publish flow + the
+> Make/schedule/resize logic are harness-tested but **not yet
+> verified live** — run the Fill-only dry-run (Step 3 below) and
+> check the Console tab before auto-publish.
 
 ## What it does
 
@@ -230,7 +237,7 @@ selectors. Instead, do one of these on the create page:
 
 ## What was tested (Nov 14, 2026)
 
-- `node --check` — syntax OK (2,065 lines, ~106 KB).
+- `node --check` — syntax OK (2,089 lines, ~108 KB).
 - Logic harness (21 checks, all pass): 10 seed listings, 40 services,
   7 cities, 26 FB categories + 4 conditions + 2 availability options,
   dropdown option builder (blank first, custom value preserved),
@@ -295,12 +302,14 @@ selectors. Instead, do one of these on the create page:
   always-on equal start/end case; wait-until-window math (2h/11h/12h
   cases); the schedule gate returns 0 when off, inside the window,
   or given invalid times; schedule defaults off, 09:00–21:00.
-- Resize/navigation harness (20 checks, all pass): width clamping
+- Resize/navigation harness (26 checks, all pass): width clamping
   (280–700px, rounded, invalid input falls back to 430px), drag
   math (panel right edge minus pointer x, clamped both ways), the
-  create-page predicate Start uses (create/item and create/vehicle
-  count; home, browse and selling pages do not), and the 430px
-  width default in settings.
+  create-page predicate Start uses (ONLY create/item, trailing
+  slash allowed — create/vehicle, bare create/, create/item/extra,
+  home, browse and selling pages do not count), fill refusal off
+  the item form (vehicle + browse pages), and the 430px width
+  default in settings.
 - Panel smoke test (fake DOM): script boots without errors, listings
   render with names, NO PHOTOS badges, uploaded/link counts and queue
   button after the async photo-count refresh.
@@ -309,18 +318,21 @@ selectors. Instead, do one of these on the create page:
   attach worked). Nov 14: Category selection CONFIRMED WORKING.
   Product tags + Availability (v1.1.5), the Next → Publish +
   return-to-create-form flow (v1.1.6), the Console + countdown
-  (v1.1.7), the Make field + posting-hours gate (v1.1.8) and the
-  resizable panel + Start navigation (v1.1.9) are harness-tested
-  only — live verification of tags, availability, location
-  selection, attach, Publish and Renew is still open (Step 3
-  above, or a live browser session on the test account). Condition
-  option names are the standard Facebook names, unverified live.
-  Photo copy/delete on Duplicate/Delete share the tested IndexedDB
-  patterns but were not individually harness-tested. The resize
-  drag itself needs a live browser check (the math is tested; the
-  pointer handling is not).
+  (v1.1.7), the Make field + posting-hours gate (v1.1.8), the
+  resizable panel + Start navigation (v1.1.9) and the item-only
+  page check + fill refusal (v1.1.10) are harness-tested only —
+  live verification of tags, availability, location selection,
+  attach, Publish and Renew is still open (Step 3 above, or a
+  live browser session on the test account). Nov 14 live evidence:
+  Start on create/vehicle filled Location + attached 1 photo on
+  the vehicle form and stalled on its disabled Next (fixed by
+  v1.1.10). Condition option names are the standard Facebook
+  names, unverified live. Photo copy/delete on Duplicate/Delete
+  share the tested IndexedDB patterns but were not individually
+  harness-tested. The resize drag itself needs a live browser
+  check (the math is tested; the pointer handling is not).
 
 ## Files
 
-- `locksmith-marketplace-poster.user.js` — the script (v1.1.9).
+- `locksmith-marketplace-poster.user.js` — the script (v1.1.10).
 - `README.md` — this file.
