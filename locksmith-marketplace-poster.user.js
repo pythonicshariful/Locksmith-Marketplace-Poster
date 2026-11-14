@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Locksmith Marketplace Poster (Standalone)
 // @namespace    https://locksmith-marketplace-poster.local
-// @version      1.1.5
+// @version      1.1.6
 // @description  Standalone Facebook Marketplace auto-listing panel for locksmith services. No server needed: listings, variation, schedule and queue all live in Tampermonkey storage; photos can be uploaded from your computer (stored in the browser) or given as image links. Fill-only dry-run mode included for safe live testing.
 // @author       Shariful Islam
 // @match        https://www.facebook.com/marketplace/*
@@ -14,7 +14,7 @@
 // @run-at       document-idle
 // ==/UserScript==
 /*
- * Locksmith Marketplace Poster — STANDALONE v1.1.5
+ * Locksmith Marketplace Poster — STANDALONE v1.1.6
  * -------------------------------------------------
  * Built for hammadsolomon (Fiverr order FO5234353C085, $200 one-time).
  * Requirements covered:
@@ -67,6 +67,17 @@
  *    Availability (same combobox pattern, role="option" rows: "List
  *    as Single Item" / "List as In Stock") as an Edit / Settings
  *    dropdown.
+ *  - v1.1.6 fixes the Next -> Publish step and the after-publish
+ *    flow. Next was clicked once, immediately after fill, while
+ *    still disabled (Facebook enables it only after every required
+ *    field validates), so the click did nothing and Publish never
+ *    appeared. Buttons are now polled until enabled (re-queried
+ *    each poll, since React may replace the node) and clicked with
+ *    the human-like pointer sequence. After a successful publish
+ *    the script waits a few seconds, returns to a fresh create
+ *    form, and idles there until the next listing is due (the queue
+ *    resume honours the planned wait). Fill-only mode is unchanged:
+ *    it still stops after filling and never clicks Next/Publish.
  *
  * LIVE-TEST STATUS: local syntax + logic tests pass. Facebook form
  * selectors have NOT been verified against a live logged-in Marketplace
@@ -1158,15 +1169,25 @@ function findButtonByText(texts) {
   return null;
 }
 async function clickButtonWhenEnabled(texts, timeoutMs, label) {
-  const btn = await waitFor(() => findButtonByText(texts), timeoutMs || 15000);
-  if (!btn) { addLog(label + ' button not found.', 'warn'); return false; }
+  // Re-query on every poll: Facebook re-renders the button when it
+  // enables, so a reference grabbed while disabled may go stale.
   const deadline = Date.now() + (timeoutMs || 15000);
+  let seenDisabled = false;
   while (Date.now() < deadline) {
-    const disabled = btn.disabled || btn.getAttribute('aria-disabled') === 'true';
-    if (!disabled) { btn.click(); return true; }
+    const btn = findButtonByText(texts);
+    if (btn) {
+      const disabled = btn.disabled || btn.getAttribute('aria-disabled') === 'true';
+      if (!disabled) {
+        try { btn.scrollIntoView({ block: 'center' }); } catch (e) {}
+        await clickOptionRow(btn);
+        return true;
+      }
+      seenDisabled = true;
+    }
     await sleep(800);
   }
-  addLog(label + ' button stayed disabled (Facebook may be waiting on photos/required fields).', 'warn');
+  if (seenDisabled) addLog(label + ' button stayed disabled (Facebook may be waiting on photos/required fields).', 'warn');
+  else addLog(label + ' button not found.', 'warn');
   return false;
 }
 
@@ -1214,10 +1235,16 @@ function looksPublished() {
 }
 
 async function publishCurrentListing(settings) {
-  // Some flows show Next before Publish.
-  const nextBtn = findButtonByText(['Next']);
-  if (nextBtn) {
-    nextBtn.click();
+  // Some flows show Next before Publish. Next only becomes clickable
+  // once every required field validates, so wait for it to enable
+  // instead of clicking immediately after fill.
+  const nextPresent = await waitFor(() => findButtonByText(['Next']), 3000);
+  if (nextPresent) {
+    const nextOk = await clickButtonWhenEnabled(['Next'], 20000, 'Next');
+    if (!nextOk) {
+      addLog('Could not click Next — publish aborted. Check the form by hand.', 'warn');
+      return false;
+    }
     addLog('Clicked Next — waiting for review step…');
     await sleep(2500);
   }
@@ -1233,9 +1260,37 @@ async function publishCurrentListing(settings) {
 let queueTimer = null;
 function stopQueueTimer() { if (queueTimer) { clearTimeout(queueTimer); queueTimer = null; } }
 
+/* Planned wait between listings, stored on the queue so it survives
+ * the navigation back to the create form after a publish. */
+function planQueueWait(q, settings) {
+  const waitMs = randInt(settings.intervalMinSec, settings.intervalMaxSec) * 1000;
+  q.nextAt = Date.now() + waitMs;
+  return waitMs;
+}
+function queueResumeDelayMs(q) {
+  if (!q || !q.nextAt) return 0;
+  return Math.max(0, q.nextAt - Date.now());
+}
+/* After a successful publish: wait a little on the confirmation,
+ * then go back to a fresh create form and idle there until the next
+ * listing is due. The next listing does NOT start on the fresh page
+ * — boot() honours q.nextAt. testDelayMs overrides the short wait
+ * (harness only; production always waits a few seconds). */
+async function returnToCreateForm(q, settings, testDelayMs) {
+  const waitMs = planQueueWait(q, settings);
+  saveQueue(q);
+  addLog('Published. Returning to the create form shortly — next listing in ' + Math.round(waitMs / 1000) + 's.');
+  if (testDelayMs !== undefined) await sleep(testDelayMs);
+  else await randDelay(5000, 9000);
+  location.href = CREATE_ITEM_URL;
+}
+
 async function runQueueStep() {
   const q = loadQueue();
   if (!q.running) return;
+  // A step that is running is due: a planned wait must never delay it
+  // again (e.g. after the navigation back to the create form).
+  if (q.nextAt) { q.nextAt = 0; saveQueue(q); }
   const settings = loadSettings();
   if (q.index >= q.items.length) {
     q.running = false; saveQueue(q);
@@ -1272,7 +1327,19 @@ async function runQueueStep() {
       const ok = await publishCurrentListing(settings);
       item.status = ok ? 'done' : 'failed';
       item.note = ok ? ('Published: ' + rendered.title) : 'Publish not confirmed';
-      if (ok) markUsed(rendered.key);
+      if (ok) {
+        markUsed(rendered.key);
+        q.index++; saveQueue(q);
+        if (q.index >= q.items.length) {
+          q.running = false; saveQueue(q);
+          addLog('Queue finished: ' + q.items.filter(i => i.status === 'done').length + ' done, ' +
+            q.items.filter(i => i.status === 'failed').length + ' failed.', 'ok');
+          renderPanel(); return;
+        }
+        renderPanel();
+        await returnToCreateForm(q, settings);
+        return;
+      }
     }
   } else {
     item.status = 'filled';
@@ -1312,7 +1379,7 @@ function startQueue(selectedIds) {
   runQueueStep();
 }
 function stopQueue() {
-  const q = loadQueue(); q.running = false; saveQueue(q); stopQueueTimer();
+  const q = loadQueue(); q.running = false; q.nextAt = 0; saveQueue(q); stopQueueTimer();
   addLog('Queue stopped.'); renderPanel();
 }
 function resetQueue() { saveQueue({ running: false, items: [], index: 0, startedAt: 0 }); renderPanel(); }
@@ -1415,7 +1482,7 @@ function buildPanel() {
   panel.id = 'lmp-panel';
   panel.innerHTML =
     '<div id="lmp-head"><h1>🔑 Locksmith Marketplace Poster</h1>' +
-    '<p>Standalone v1.1.5 &nbsp;•&nbsp; No server &nbsp;•&nbsp; Account: this Chrome profile\'s logged-in Facebook account</p></div>' +
+    '<p>Standalone v1.1.6 &nbsp;•&nbsp; No server &nbsp;•&nbsp; Account: this Chrome profile\'s logged-in Facebook account</p></div>' +
     '<div class="lmp-tabs">' +
     '<button class="lmp-tab" data-tab="listings">Listings</button>' +
     '<button class="lmp-tab" data-tab="queue">Queue</button>' +
@@ -1749,24 +1816,32 @@ function boot() {
   try { if (window.top !== window.self) return; } catch (e) { return; }
   buildPanel();
   refreshPhotoCounts();
-  addLog('Locksmith Poster ready (standalone v1.1.5). ' +
+  addLog('Locksmith Poster ready (standalone v1.1.6). ' +
     (loadSettings().autoPublish ? 'Mode: Fill + Publish.' : 'Mode: Fill-only dry-run — safe to test.'));
   const q = loadQueue();
   if (q.running && q.items.length && q.index < q.items.length) {
-    addLog('Resuming queue: item ' + (q.index + 1) + ' / ' + q.items.length + '…');
-    setTimeout(() => { runQueueStep(); }, 2500);
+    const delay = queueResumeDelayMs(q);
+    if (delay > 0) {
+      addLog('Queue waiting on the create form: next listing in ' + Math.round(delay / 1000) + 's…');
+      setTimeout(() => { runQueueStep(); }, delay);
+    } else {
+      addLog('Resuming queue: item ' + (q.index + 1) + ' / ' + q.items.length + '…');
+      setTimeout(() => { runQueueStep(); }, 2500);
+    }
   }
 }
 
 // Debug/test handle (read-only helpers + state). Harmless in production.
 try {
   window.LMP = {
-    version: '1.1.5', spinText, applyTokens, renderListing, pickPrice,
+    version: '1.1.6', spinText, applyTokens, renderListing, pickPrice,
     seedListings, loadListings, loadSettings, CITIES, ALL_SERVICES,
     FB_CATEGORIES, FB_CONDITIONS, FB_AVAILABILITY, dropdownOpts,
     photoStoreAvailable, resolveListingPhotoFiles, getStoredPhotos, storePhotos,
     findInputByLabels, humanType, setEditableText, logFieldDiagnostics, setLocation,
-    fillProductTags, selectFromDropdown, findCombobox, dropdownDialog
+    fillProductTags, selectFromDropdown, findCombobox, dropdownDialog,
+    findButtonByText, clickButtonWhenEnabled, publishCurrentListing,
+    planQueueWait, queueResumeDelayMs, returnToCreateForm, CREATE_ITEM_URL
   };
 } catch (e) {}
 

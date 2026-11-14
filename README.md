@@ -1,14 +1,15 @@
 # Locksmith Marketplace Poster — Standalone (Tampermonkey)
 
-**Version 1.1.5 — for hammadsolomon (Fiverr order FO5234353C085)**
+**Version 1.1.6 — for hammadsolomon (Fiverr order FO5234353C085)**
 
 A standalone Tampermonkey userscript that fills and posts Facebook Marketplace
 listings for locksmith services from a side panel. **No server, no Python, no
 Flask.** Listings, settings, queue and variation history all live in
 Tampermonkey storage in the browser.
 
-> **Live-test status: CATEGORY CONFIRMED WORKING (Nov 14) — v1.1.5
-> ADDS PRODUCT TAGS + AVAILABILITY FROM LIVE FIELD HTML.** The first
+> **Live-test status: CATEGORY CONFIRMED WORKING (Nov 14) — v1.1.6
+> FIXES NEXT → PUBLISH + RETURNS TO THE CREATE FORM AFTER PUBLISH.**
+> The first
 > live run (v1.1.0) reported "Field not found: Description" and left
 > Title/Price empty — the finder only looked for plain inputs/
 > textareas, while Facebook's Description is a rich-text (Lexical)
@@ -31,11 +32,21 @@ Tampermonkey storage in the browser.
 > count verifies the commit; {city}/{service} tokens supported) and
 > Availability ("List as Single Item" / "List as In Stock", same
 > combobox pattern with role="option" rows) as Edit + Settings
-> dropdowns. A second view-source file (Nov 14) again contained NO
-> rendered DOM — only JS bundle names — so it cannot settle the
-> selectors. Tags + Availability are harness-tested but **not yet
-> verified live** — run the Fill-only dry-run (Step 3 below) and check
-> the Log tab before auto-publish.
+> dropdowns. v1.1.6 fixes Next → Publish: Next was clicked once,
+> immediately after fill, while still disabled (Facebook enables it
+> only after every required field validates), so the click did
+> nothing and Publish never appeared. Buttons are now polled until
+> enabled (re-queried each poll, since React may replace the node)
+> and clicked with the human-like pointer sequence. After a
+> successful publish the script waits a few seconds, returns to a
+> fresh create form, and idles there until the next listing is due.
+> Fill-only mode is unchanged: it stops after filling and never
+> clicks Next/Publish. A second view-source file (Nov 14) again
+> contained NO rendered DOM — only JS bundle names — so it cannot
+> settle the selectors. Tags + Availability + the Next → Publish
+> flow are harness-tested but **not yet verified live** — run the
+> Fill-only dry-run (Step 3 below) and check the Log tab before
+> auto-publish.
 
 ## What it does
 
@@ -190,7 +201,7 @@ selectors. Instead, do one of these on the create page:
 
 ## What was tested (Nov 14, 2026)
 
-- `node --check` — syntax OK (1,776 lines, ~93 KB).
+- `node --check` — syntax OK (1,851 lines, ~96 KB).
 - Logic harness (21 checks, all pass): 10 seed listings, 40 services,
   7 cities, 26 FB categories + 4 conditions + 2 availability options,
   dropdown option builder (blank first, custom value preserved),
@@ -227,13 +238,24 @@ selectors. Instead, do one of these on the create page:
   tags" label; 3 comma-separated tags (one with a {city} token)
   become 3 chips; blank tags are a no-op; empty entries skipped;
   Enter-not-committing returns false, warns, and clears the box.
+- Next/Publish harness (16 checks, all pass, fake DOM built from the
+  live Next/Publish button HTML): full Next → Publish flow reaches
+  the item page with confirmation logged; a disabled-then-enabled
+  Next is clicked only after enabling; a stuck-disabled Next returns
+  false with a warning and no click; direct Publish without Next
+  works; a React re-render (stale node replaced) clicks the fresh
+  node only; a panel "Next" decoy is never picked; the planned
+  180–300s wait and resume delay are computed correctly; after a
+  publish the script returns to marketplace/create/item and idles
+  there until the next listing is due.
 - Panel smoke test (fake DOM): script boots without errors, listings
   render with names, NO PHOTOS badges, uploaded/link counts and queue
   button after the async photo-count refresh.
 - **Live:** v1.1.0 first live test Nov 12 FAILED on fields (Description
   not found, Title/Price empty; photo preview did appear, suggesting
   attach worked). Nov 14: Category selection CONFIRMED WORKING.
-  Product tags + Availability (v1.1.5) are harness-tested only — live
+  Product tags + Availability (v1.1.5) and the Next → Publish +
+  return-to-create-form flow (v1.1.6) are harness-tested only — live
   verification of tags, availability, location selection, attach,
   Publish and Renew is still open (Step 3 above, or a live browser
   session on the test account). Condition option names are the
@@ -243,5 +265,5 @@ selectors. Instead, do one of these on the create page:
 
 ## Files
 
-- `locksmith-marketplace-poster.user.js` — the script (v1.1.5).
+- `locksmith-marketplace-poster.user.js` — the script (v1.1.6).
 - `README.md` — this file.
