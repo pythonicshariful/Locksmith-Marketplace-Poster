@@ -1,14 +1,14 @@
 # Locksmith Marketplace Poster — Standalone (Tampermonkey)
 
-**Version 1.1.7 — for hammadsolomon (Fiverr order FO5234353C085)**
+**Version 1.1.8 — for hammadsolomon (Fiverr order FO5234353C085)**
 
 A standalone Tampermonkey userscript that fills and posts Facebook Marketplace
 listings for locksmith services from a side panel. **No server, no Python, no
 Flask.** Listings, settings, queue and variation history all live in
 Tampermonkey storage in the browser.
 
-> **Live-test status: CATEGORY CONFIRMED WORKING (Nov 14) — v1.1.7
-> ADDS A LIVE CONSOLE TAB + NEXT-POST COUNTDOWN.**
+> **Live-test status: CATEGORY CONFIRMED WORKING (Nov 14) — v1.1.8
+> ADDS A VEHICLE MAKE FIELD + POSTING-HOURS SCHEDULING.**
 > The first
 > live run (v1.1.0) reported "Field not found: Description" and left
 > Title/Price empty — the finder only looked for plain inputs/
@@ -48,12 +48,20 @@ Tampermonkey storage in the browser.
 > Console header, the Queue tab and the always-visible status bar
 > (which also shows the latest line). Console styling follows the
 > UI/UX Pro Max data-dense dashboard guidance (dense mono
-> type, kind-colored markers, one atomic status message). A second
-> view-source file (Nov 14) again contained NO rendered DOM — only
-> JS bundle names — so it cannot settle the selectors. Tags +
-> Availability + the Next → Publish flow are harness-tested but
-> **not yet verified live** — run the Fill-only dry-run (Step 3
-> below) and check the Console tab before auto-publish.
+> type, kind-colored markers, one atomic status message). v1.1.8
+> closes two gaps from a requirements audit: a Vehicle Make field
+> (dropdown + custom-make box) drives the {make} token, so the same
+> service can vary across makes — the 5 make-specific seeds carry
+> their make, older listings still derive it from the service name;
+> and posting-hours scheduling (Settings) restricts queue runs to a
+> local-time window — overnight windows work, same start/end means
+> always on, and outside the window the queue waits with the
+> countdown showing. A second view-source file (Nov 14) again
+> contained NO rendered DOM — only JS bundle names — so it cannot
+> settle the selectors. Tags + Availability + the Next → Publish
+> flow + the Make/schedule logic are harness-tested but **not yet
+> verified live** — run the Fill-only dry-run (Step 3 below) and
+> check the Console tab before auto-publish.
 
 ## What it does
 
@@ -65,10 +73,15 @@ Tampermonkey storage in the browser.
 - **Variation, no exact repeats.** Titles/descriptions use spintax
   `{option A|option B}` plus `{city}`, `{service}`, `{make}` tokens, price
   jitter (±$, rounded to $5), and already-used combination tracking. Use
-  **Preview variation** to see a spun example before posting.
+  **Preview variation** to see a spun example before posting. Each
+  listing has a **Vehicle Make** field (dropdown + custom-make box)
+  driving `{make}`, so the same service can vary across makes.
 - **Queue + schedule.** Tick listings, Start queue, set the interval
   (default 3–5 minutes, randomised). The queue survives page changes —
   keep the tab open. Max per run is capped in Settings (default 10).
+  **Posting hours** (Settings, off by default) restrict queue runs to a
+  local-time window — overnight windows like 22:00–06:00 work, and
+  outside the window the queue waits with the countdown showing.
 - **Two modes.** Fill-only dry-run (default, safe) fills the form and
   pauses so you can review. Fill + Publish clicks Next/Publish and moves
   to the next listing. Change mode in Settings.
@@ -208,7 +221,7 @@ selectors. Instead, do one of these on the create page:
 
 ## What was tested (Nov 14, 2026)
 
-- `node --check` — syntax OK (1,909 lines, ~100 KB).
+- `node --check` — syntax OK (1,997 lines, ~103 KB).
 - Logic harness (21 checks, all pass): 10 seed listings, 40 services,
   7 cities, 26 FB categories + 4 conditions + 2 availability options,
   dropdown option builder (blank first, custom value preserved),
@@ -263,6 +276,16 @@ selectors. Instead, do one of these on the create page:
   formatting (00:00 / 01:05 / 1:01:01) and all countdown states
   (idle / waiting / posting), and the 1s ticker updates every
   countdown element from the stored queue.
+- Make/schedule harness (42 checks, all pass): 26 makes including the
+  buyer's six; `{make}` from the listing's own field, derived from the
+  service name for older listings, and empty (never the service name)
+  when no make applies; seed makes on the 5 make-specific seeds;
+  same template + different makes renders different titles with
+  different dedup keys; time parsing incl. invalid values; day and
+  overnight posting windows incl. end-exclusive edges and the
+  always-on equal start/end case; wait-until-window math (2h/11h/12h
+  cases); the schedule gate returns 0 when off, inside the window,
+  or given invalid times; schedule defaults off, 09:00–21:00.
 - Panel smoke test (fake DOM): script boots without errors, listings
   render with names, NO PHOTOS badges, uploaded/link counts and queue
   button after the async photo-count refresh.
@@ -270,16 +293,16 @@ selectors. Instead, do one of these on the create page:
   not found, Title/Price empty; photo preview did appear, suggesting
   attach worked). Nov 14: Category selection CONFIRMED WORKING.
   Product tags + Availability (v1.1.5), the Next → Publish +
-  return-to-create-form flow (v1.1.6) and the Console + countdown
-  (v1.1.7) are harness-tested only — live verification of tags,
-  availability, location selection, attach, Publish and Renew is
-  still open (Step 3 above, or a live browser session on the test
-  account). Condition option names are the standard Facebook names,
-  unverified live. Photo copy/delete on Duplicate/Delete share the
-  tested IndexedDB patterns but were not individually
-  harness-tested.
+  return-to-create-form flow (v1.1.6), the Console + countdown
+  (v1.1.7) and the Make field + posting-hours gate (v1.1.8) are
+  harness-tested only — live verification of tags, availability,
+  location selection, attach, Publish and Renew is still open (Step
+  3 above, or a live browser session on the test account). Condition
+  option names are the standard Facebook names, unverified live.
+  Photo copy/delete on Duplicate/Delete share the tested IndexedDB
+  patterns but were not individually harness-tested.
 
 ## Files
 
-- `locksmith-marketplace-poster.user.js` — the script (v1.1.7).
+- `locksmith-marketplace-poster.user.js` — the script (v1.1.8).
 - `README.md` — this file.

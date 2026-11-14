@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Locksmith Marketplace Poster (Standalone)
 // @namespace    https://locksmith-marketplace-poster.local
-// @version      1.1.7
+// @version      1.1.8
 // @description  Standalone Facebook Marketplace auto-listing panel for locksmith services. No server needed: listings, variation, schedule and queue all live in Tampermonkey storage; photos can be uploaded from your computer (stored in the browser) or given as image links. Fill-only dry-run mode included for safe live testing.
 // @author       Shariful Islam
 // @match        https://www.facebook.com/marketplace/*
@@ -14,7 +14,7 @@
 // @run-at       document-idle
 // ==/UserScript==
 /*
- * Locksmith Marketplace Poster — STANDALONE v1.1.7
+ * Locksmith Marketplace Poster — STANDALONE v1.1.8
  * -------------------------------------------------
  * Built for hammadsolomon (Fiverr order FO5234353C085, $200 one-time).
  * Requirements covered:
@@ -84,6 +84,15 @@
  *    second in the Console header, the Queue tab and the always-
  *    visible status bar. The status bar also shows the latest log
  *    line. Log history kept in storage grows from 100 to 200 lines.
+ *  - v1.1.8 adds a Vehicle Make field (closes a requirements-audit
+ *    gap): a per-listing Make dropdown + custom-make box, used by
+ *    the {make} token so the same service can vary across makes.
+ *    Older listings without a Make still derive it from the service
+ *    name; no make found now yields '' instead of the service name.
+ *    Also adds posting-hours scheduling: when enabled, queue steps
+ *    only run inside the chosen local-time window (overnight
+ *    windows work; same start/end = always on), waiting with the
+ *    countdown showing until the window opens.
  *
  * LIVE-TEST STATUS: local syntax + logic tests pass. Facebook form
  * selectors have NOT been verified against a live logged-in Marketplace
@@ -140,6 +149,18 @@ const ALL_SERVICES = Object.values(SERVICES).flat();
  * dropdown dialog (Nov 14) — casing included. The editor and Settings
  * offer these as dropdowns so nobody has to type exact names by hand.
  * A custom-name text box next to each dropdown wins over the list. */
+/* Vehicle makes for the per-listing Make field. The buyer's makes
+ * (Mercedes, Land Rover / Range Rover, Nissan, Mazda, Ford) lead the
+ * list; anything else goes in the custom-make box. Order matters for
+ * the service-name fallback in listingMake: 'Land Rover' must stay
+ * before 'Range Rover'. */
+const MAKES = [
+  'Mercedes', 'Land Rover', 'Range Rover', 'Nissan', 'Mazda', 'Ford',
+  'BMW', 'Audi', 'Toyota', 'Honda', 'Chevrolet', 'Hyundai', 'Kia',
+  'Jeep', 'Dodge', 'Chrysler', 'GMC', 'Lexus', 'Acura', 'Infiniti',
+  'Volkswagen', 'Subaru', 'Volvo', 'Tesla', 'Cadillac', 'Ram'
+];
+
 const FB_CATEGORIES = [
   'Tools', 'Furniture', 'Household', 'Garden', 'Appliances',
   'Video Games', 'Books, Movies & Music',
@@ -187,7 +208,10 @@ const DEFAULT_SETTINGS = {
   categoryDefault: '',
   conditionDefault: '',
   tagsDefault: '',
-  availabilityDefault: ''
+  availabilityDefault: '',
+  scheduleEnabled: false,
+  scheduleStart: '09:00',
+  scheduleEnd: '21:00'
 };
 
 /* Seed listings: the buyer's own 10 examples (Nov 8), turned into
@@ -196,10 +220,10 @@ const DEFAULT_SETTINGS = {
  * Facebook requires at least 1 photo; a listing with no images will
  * fill everything else and stop before Publish with a clear warning. */
 function seedListings() {
-  const base = (id, name, service, city, price, priceVary, title, desc) => ({
+  const base = (id, name, service, city, price, priceVary, title, desc, make) => ({
     id, name, service, city, price, priceVary,
     titleTemplate: title, descriptionTemplate: desc,
-    category: '', condition: '', tags: '', availability: '',
+    category: '', condition: '', tags: '', availability: '', make: make || '',
     images: [], enabled: true, createdAt: Date.now()
   });
   return [
@@ -214,19 +238,19 @@ function seedListings() {
       '{Mobile car key replacement and programming for many vehicle makes and models in {city}.|Car key replacement and programming in {city} for many makes and models.} Message with your car year, make, and model for pricing.'),
     base('seed-04', 'Mercedes Key — Tampa', 'Mercedes Key Replacement', 'Tampa, FL', 120, 20,
       '{Mercedes Key Replacement|Mercedes Car Key Replacement} – {city}',
-      '{Mobile Mercedes key replacement and programming service in {city}.|Mercedes key replacement and programming in {city}.} Message with the year and model of your Mercedes for availability and pricing.'),
+      '{Mobile Mercedes key replacement and programming service in {city}.|Mercedes key replacement and programming in {city}.} Message with the year and model of your Mercedes for availability and pricing.', 'Mercedes'),
     base('seed-05', 'Land Rover / Range Rover Keys — Tampa', 'Land Rover / Range Rover Key Replacement', 'Tampa, FL', 120, 20,
       '{Land Rover & Range Rover Key Replacement|Range Rover Key Replacement} – {city}',
-      '{Mobile key replacement and programming for many Land Rover and Range Rover models in {city}.|Key replacement and programming for Land Rover and Range Rover in {city}.} Send the vehicle year and model for availability.'),
+      '{Mobile key replacement and programming for many Land Rover and Range Rover models in {city}.|Key replacement and programming for Land Rover and Range Rover in {city}.} Send the vehicle year and model for availability.', 'Land Rover'),
     base('seed-06', 'Nissan Keys — Tampa', 'Nissan Key Replacement', 'Tampa, FL', 100, 20,
       '{Nissan Key Replacement & Programming|Nissan Car Keys} – {city}',
-      '{Replacement and programming for Nissan keys, smart keys, push-to-start keys, and remotes in {city}.|Nissan key, smart key and remote programming in {city}.} Message with the year and model.'),
+      '{Replacement and programming for Nissan keys, smart keys, push-to-start keys, and remotes in {city}.|Nissan key, smart key and remote programming in {city}.} Message with the year and model.', 'Nissan'),
     base('seed-07', 'Mazda Keys — Tampa', 'Mazda Key Replacement', 'Tampa, FL', 100, 20,
       '{Mazda Key Replacement|Mazda Car Key Replacement} – {city}',
-      '{Mobile Mazda car key replacement and programming for many models in {city}.|Mazda key replacement and programming in {city}.} Send the vehicle year and model for pricing.'),
+      '{Mobile Mazda car key replacement and programming for many models in {city}.|Mazda key replacement and programming in {city}.} Send the vehicle year and model for pricing.', 'Mazda'),
     base('seed-08', 'Ford Keys — Tampa', 'Ford Key Replacement', 'Tampa, FL', 100, 20,
       '{Ford Key Replacement & Programming|Ford Car Keys} – {city}',
-      '{Mobile Ford key replacement, smart key programming, remote programming, and lost-key service for many Ford vehicles in {city}.|Ford key replacement and programming in {city}.} Message with the year and model.'),
+      '{Mobile Ford key replacement, smart key programming, remote programming, and lost-key service for many Ford vehicles in {city}.|Ford key replacement and programming in {city}.} Message with the year and model.', 'Ford'),
     base('seed-09', 'Commercial Lock Change — Tampa', 'Commercial Lock Replacement', 'Tampa, FL', 90, 20,
       '{Commercial Lock Replacement|Commercial Lock Change} – {city}',
       '{Commercial locksmith service for offices, stores, warehouses, and other businesses in {city}.|Lock replacement and security upgrades for businesses in {city}.} Message for availability.'),
@@ -333,15 +357,25 @@ function spinText(text) {
   return out;
 }
 
+/* Vehicle make for {make}: the listing's own Make field wins; older
+ * listings without one fall back to a make name found in the service
+ * name. No make found -> '' (never the whole service name). */
+function listingMake(listing) {
+  const own = String((listing && listing.make) || '').trim();
+  if (own) return own;
+  const svc = String((listing && listing.service) || '');
+  for (const m of MAKES) {
+    if (new RegExp('\\b' + m.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b', 'i').test(svc)) return m;
+  }
+  return '';
+}
 function applyTokens(text, listing) {
   const cityShort = String(listing.city || '').split(',')[0].trim();
-  const make = (listing.service || '').replace(/ Key Replacement.*$/i, '')
-    .replace(/.*\b(Mercedes|Land Rover|Range Rover|Nissan|Mazda|Ford)\b.*/i, '$1');
   return String(text || '')
     .replace(/\{city\}/gi, cityShort)
     .replace(/\{cityFull\}/gi, listing.city || '')
     .replace(/\{service\}/gi, listing.service || '')
-    .replace(/\{make\}/gi, make || '');
+    .replace(/\{make\}/gi, listingMake(listing || {}));
 }
 
 function pickPrice(listing) {
@@ -1277,6 +1311,40 @@ function stopQueueTimer() { if (queueTimer) { clearTimeout(queueTimer); queueTim
 
 /* Planned wait between listings, stored on the queue so it survives
  * the navigation back to the create form after a publish. */
+/* ---- Posting-hours schedule (browser-local time) ---- */
+function parseHHMM(s) {
+  const m = /^(\d{1,2}):(\d{2})$/.exec(String(s || '').trim());
+  if (!m) return null;
+  const h = +m[1], mi = +m[2];
+  if (h > 23 || mi > 59) return null;
+  return h * 60 + mi;
+}
+/* True inside [start, end). Overnight windows (start > end, e.g.
+ * 22:00-06:00) wrap midnight. start === end means always on. */
+function inPostingWindow(nowDate, startMin, endMin) {
+  if (startMin === endMin) return true;
+  const t = nowDate.getHours() * 60 + nowDate.getMinutes();
+  if (startMin < endMin) return t >= startMin && t < endMin;
+  return t >= startMin || t < endMin;
+}
+/* Ms until the window next opens; 0 when already inside it. */
+function msUntilWindow(nowDate, startMin, endMin) {
+  if (inPostingWindow(nowDate, startMin, endMin)) return 0;
+  const start = new Date(nowDate);
+  start.setHours(Math.floor(startMin / 60), startMin % 60, 0, 0);
+  if (startMin < endMin && start <= nowDate) start.setDate(start.getDate() + 1);
+  return start - nowDate;
+}
+/* How long the queue must wait for posting hours: 0 when the
+ * schedule is off, the times are invalid (fail open), or the
+ * window is open now. */
+function scheduleGateDelayMs(settings, nowDate) {
+  if (!settings || !settings.scheduleEnabled) return 0;
+  const sMin = parseHHMM(settings.scheduleStart), eMin = parseHHMM(settings.scheduleEnd);
+  if (sMin === null || eMin === null) return 0;
+  return msUntilWindow(nowDate || new Date(), sMin, eMin);
+}
+
 function planQueueWait(q, settings) {
   const waitMs = randInt(settings.intervalMinSec, settings.intervalMaxSec) * 1000;
   q.nextAt = Date.now() + waitMs;
@@ -1339,6 +1407,14 @@ async function runQueueStep() {
     addLog('Queue finished: ' + q.items.filter(i => i.status === 'done').length + ' done, ' +
       q.items.filter(i => i.status === 'failed').length + ' failed.', 'ok');
     renderPanel(); return;
+  }
+  // Posting-hours gate: outside the window, wait until it opens
+  // instead of filling/posting. The countdown shows the wait, and
+  // the planned nextAt survives reloads via the boot resume.
+  const gateDelay = scheduleGateDelayMs(settings, new Date());
+  if (gateDelay > 0) {
+    addLog('Outside posting hours (' + settings.scheduleStart + '–' + settings.scheduleEnd + ' local) — next post when the window opens in ' + formatCountdown(gateDelay) + '.');
+    return scheduleNextStep(gateDelay);
   }
   const item = q.items[q.index];
   const listings = loadListings();
@@ -1534,7 +1610,7 @@ function buildPanel() {
   panel.id = 'lmp-panel';
   panel.innerHTML =
     '<div id="lmp-head"><h1>🔑 Locksmith Marketplace Poster</h1>' +
-    '<p>Standalone v1.1.7 &nbsp;•&nbsp; No server &nbsp;•&nbsp; Account: this Chrome profile\'s logged-in Facebook account</p></div>' +
+    '<p>Standalone v1.1.8 &nbsp;•&nbsp; No server &nbsp;•&nbsp; Account: this Chrome profile\'s logged-in Facebook account</p></div>' +
     '<div class="lmp-tabs">' +
     '<button class="lmp-tab" data-tab="listings">Listings</button>' +
     '<button class="lmp-tab" data-tab="queue">Queue</button>' +
@@ -1591,7 +1667,7 @@ function listingsHtml() {
     h += '<div class="lmp-card' + (sel ? ' lmp-selected' : '') + '">' +
       '<label><input type="checkbox" data-check="' + esc(l.id) + '"' + (sel ? ' checked' : '') + '> ' +
       '<h3 style="display:inline">' + esc(l.name) + (noImg ? '<span class="lmp-badge">NO PHOTOS</span>' : '') + '</h3></label>' +
-      '<p>' + esc(l.service) + ' • ' + esc(l.city) + ' • <span class="lmp-price">$' + esc(l.price) +
+      '<p>' + esc(l.service) + (l.make ? ' • ' + esc(l.make) : '') + ' • ' + esc(l.city) + ' • <span class="lmp-price">$' + esc(l.price) +
       (l.priceVary ? ' ±$' + esc(l.priceVary) : '') + '</span> • ' + uploadedCount + ' uploaded + ' + linkCount + ' link photo(s)</p>' +
       '<p>' + esc((l.titleTemplate || '').slice(0, 90)) + '</p>' +
       '<button class="lmp-btn lmp-secondary" data-edit="' + esc(l.id) + '">Edit</button>' +
@@ -1607,7 +1683,8 @@ function queueHtml() {
   const s = loadSettings();
   let h = '<p class="lmp-note">Mode: <b>' + (s.autoPublish ? 'Fill + Publish (auto)' : 'Fill-only dry-run (safe)') +
     '</b> — change it in Settings. Interval: ' + s.intervalMinSec + '–' + s.intervalMaxSec + 's between posts. ' +
-    'Max per run: ' + s.maxPerRun + '. The queue survives page changes; keep this tab open.</p>';
+    'Max per run: ' + s.maxPerRun + '. Posting hours: ' + (s.scheduleEnabled ? esc(s.scheduleStart) + '–' + esc(s.scheduleEnd) + ' local' : 'off') +
+    '. The queue survives page changes; keep this tab open.</p>';
   h += '<p class="lmp-note">⏱ <span class="lmp-countdown" aria-hidden="true">' + esc(countdownText(q, Date.now())) + '</span></p>';
   h += '<div><button class="lmp-btn" data-act="start-queue">▶ Start queue (' + selectedIds.size + ' selected)</button>' +
     '<button class="lmp-btn lmp-danger" data-act="stop-queue">■ Stop</button>' +
@@ -1628,7 +1705,7 @@ function queueHtml() {
 function editorHtml() {
   const listings = loadListings();
   const l = editingId ? listings.find(x => x.id === editingId) : null;
-  const v = l || { name: '', service: ALL_SERVICES[0], city: CITIES[0], price: 60, priceVary: 10, titleTemplate: '', descriptionTemplate: '', category: '', condition: '', tags: '', availability: '', images: [] };
+  const v = l || { name: '', service: ALL_SERVICES[0], city: CITIES[0], price: 60, priceVary: 10, titleTemplate: '', descriptionTemplate: '', category: '', condition: '', tags: '', availability: '', make: '', images: [] };
   const serviceOpts = Object.keys(SERVICES).map(g =>
     '<optgroup label="' + esc(g) + '">' + SERVICES[g].map(s =>
       '<option' + (s === v.service ? ' selected' : '') + '>' + esc(s) + '</option>').join('') + '</optgroup>').join('');
@@ -1639,8 +1716,10 @@ function editorHtml() {
     '<div><div class="lmp-label">City</div><select id="f-city" class="lmp-select">' + cityOpts + '</select></div></div>';
   h += '<div class="lmp-row"><div><div class="lmp-label">Price ($)</div><input id="f-price" class="lmp-input" type="number" value="' + esc(v.price) + '"></div>' +
     '<div><div class="lmp-label">Price vary ± ($)</div><input id="f-vary" class="lmp-input" type="number" value="' + esc(v.priceVary) + '"></div></div>';
-  h += '<div class="lmp-label">Title template — use {a|b} + {city} {service}</div><textarea id="f-title" class="lmp-textarea">' + esc(v.titleTemplate) + '</textarea>';
-  h += '<div class="lmp-label">Description template — use {a|b} + {city} {service}</div><textarea id="f-desc" class="lmp-textarea" style="min-height:110px">' + esc(v.descriptionTemplate) + '</textarea>';
+  h += '<div class="lmp-label">Vehicle make — for the {make} token (optional; same service can vary across makes)</div><select id="f-make" class="lmp-select">' + dropdownOpts(MAKES, v.make, '— No specific make —') + '</select>' +
+    '<input id="f-make-custom" class="lmp-input" style="margin-top:4px" placeholder="Or type another make (wins over the list)">';
+  h += '<div class="lmp-label">Title template — use {a|b} + {city} {service} {make}</div><textarea id="f-title" class="lmp-textarea">' + esc(v.titleTemplate) + '</textarea>';
+  h += '<div class="lmp-label">Description template — use {a|b} + {city} {service} {make}</div><textarea id="f-desc" class="lmp-textarea" style="min-height:110px">' + esc(v.descriptionTemplate) + '</textarea>';
   h += '<div class="lmp-row"><div><div class="lmp-label">Category</div><select id="f-cat" class="lmp-select">' + dropdownOpts(FB_CATEGORIES, v.category, '— Skip category —') + '</select>' +
     '<input id="f-cat-custom" class="lmp-input" style="margin-top:4px" placeholder="Or type exact FB name (wins over the list)"></div>' +
     '<div><div class="lmp-label">Condition</div><select id="f-cond" class="lmp-select">' + dropdownOpts(FB_CONDITIONS, v.condition, '— Skip condition —') + '</select>' +
@@ -1678,6 +1757,10 @@ function settingsHtml() {
   h += '<div class="lmp-row"><div><div class="lmp-label">Max per run</div><input id="s-maxrun" class="lmp-input" type="number" value="' + s.maxPerRun + '"></div>' +
     '<div><div class="lmp-label">Max images</div><input id="s-maximg" class="lmp-input" type="number" value="' + s.maxImages + '"></div></div>';
   h += '<label><input type="checkbox" id="s-stoperr"' + (s.stopOnError ? ' checked' : '') + '> Stop queue on first error</label><br><br>';
+  h += '<label><input type="checkbox" id="s-sched"' + (s.scheduleEnabled ? ' checked' : '') + '> <b>Posting hours</b> — only run the queue between these times (this computer\'s local time)</label>';
+  h += '<div class="lmp-row"><div><div class="lmp-label">From</div><input id="s-sched-start" class="lmp-input" type="time" value="' + esc(s.scheduleStart || '09:00') + '"></div>' +
+    '<div><div class="lmp-label">To</div><input id="s-sched-end" class="lmp-input" type="time" value="' + esc(s.scheduleEnd || '21:00') + '"></div></div>';
+  h += '<p class="lmp-note">Overnight windows work (e.g. 22:00–06:00). Same start and end = always on. Outside the window the queue waits and the countdown shows the time left.</p>';
   h += '<div class="lmp-label">Default category (used when a listing has none)</div><select id="s-cat" class="lmp-select">' + dropdownOpts(FB_CATEGORIES, s.categoryDefault, '— Skip category —') + '</select>' +
     '<input id="s-cat-custom" class="lmp-input" style="margin-top:4px" placeholder="Or type exact FB name (wins over the list)">';
   h += '<div class="lmp-label">Default condition (used when a listing has none)</div><select id="s-cond" class="lmp-select">' + dropdownOpts(FB_CONDITIONS, s.conditionDefault, '— Skip condition —') + '</select>' +
@@ -1801,6 +1884,7 @@ function handleAction(act, body) {
       condition: document.getElementById('f-cond-custom').value.trim() || document.getElementById('f-cond').value,
       availability: document.getElementById('f-avail').value,
       tags: document.getElementById('f-tags').value.trim(),
+      make: document.getElementById('f-make-custom').value.trim() || document.getElementById('f-make').value,
       images, enabled: true
     };
     const wasEdit = !!editingId;
@@ -1843,6 +1927,9 @@ function handleAction(act, body) {
     s.maxPerRun = Math.max(1, Number(document.getElementById('s-maxrun').value) || 10);
     s.maxImages = Math.max(1, Math.min(20, Number(document.getElementById('s-maximg').value) || 10));
     s.stopOnError = document.getElementById('s-stoperr').checked;
+    s.scheduleEnabled = document.getElementById('s-sched').checked;
+    s.scheduleStart = document.getElementById('s-sched-start').value || '09:00';
+    s.scheduleEnd = document.getElementById('s-sched-end').value || '21:00';
     s.categoryDefault = document.getElementById('s-cat-custom').value.trim() || document.getElementById('s-cat').value;
     s.conditionDefault = document.getElementById('s-cond-custom').value.trim() || document.getElementById('s-cond').value;
     s.availabilityDefault = document.getElementById('s-avail').value;
@@ -1873,7 +1960,7 @@ function boot() {
   try { if (window.top !== window.self) return; } catch (e) { return; }
   buildPanel();
   refreshPhotoCounts();
-  addLog('Locksmith Poster ready (standalone v1.1.7). ' +
+  addLog('Locksmith Poster ready (standalone v1.1.8). ' +
     (loadSettings().autoPublish ? 'Mode: Fill + Publish.' : 'Mode: Fill-only dry-run — safe to test.'));
   const q = loadQueue();
   if (q.running && q.items.length && q.index < q.items.length) {
@@ -1891,9 +1978,10 @@ function boot() {
 // Debug/test handle (read-only helpers + state). Harmless in production.
 try {
   window.LMP = {
-    version: '1.1.7', spinText, applyTokens, renderListing, pickPrice,
+    version: '1.1.8', spinText, applyTokens, renderListing, pickPrice,
     seedListings, loadListings, loadSettings, CITIES, ALL_SERVICES,
-    FB_CATEGORIES, FB_CONDITIONS, FB_AVAILABILITY, dropdownOpts,
+    MAKES, listingMake, FB_CATEGORIES, FB_CONDITIONS, FB_AVAILABILITY, dropdownOpts,
+    parseHHMM, inPostingWindow, msUntilWindow, scheduleGateDelayMs,
     photoStoreAvailable, resolveListingPhotoFiles, getStoredPhotos, storePhotos,
     findInputByLabels, humanType, setEditableText, logFieldDiagnostics, setLocation,
     fillProductTags, selectFromDropdown, findCombobox, dropdownDialog,
