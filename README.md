@@ -1,14 +1,14 @@
 # Locksmith Marketplace Poster — Standalone (Tampermonkey)
 
-**Version 1.1.8 — for hammadsolomon (Fiverr order FO5234353C085)**
+**Version 1.1.9 — for hammadsolomon (Fiverr order FO5234353C085)**
 
 A standalone Tampermonkey userscript that fills and posts Facebook Marketplace
 listings for locksmith services from a side panel. **No server, no Python, no
 Flask.** Listings, settings, queue and variation history all live in
 Tampermonkey storage in the browser.
 
-> **Live-test status: CATEGORY CONFIRMED WORKING (Nov 14) — v1.1.8
-> ADDS A VEHICLE MAKE FIELD + POSTING-HOURS SCHEDULING.**
+> **Live-test status: CATEGORY CONFIRMED WORKING (Nov 14) — v1.1.9
+> MAKES THE PANEL RESIZABLE + START NAVIGATES TO THE CREATE FORM.**
 > The first
 > live run (v1.1.0) reported "Field not found: Description" and left
 > Title/Price empty — the finder only looked for plain inputs/
@@ -56,17 +56,24 @@ Tampermonkey storage in the browser.
 > and posting-hours scheduling (Settings) restricts queue runs to a
 > local-time window — overnight windows work, same start/end means
 > always on, and outside the window the queue waits with the
-> countdown showing. A second view-source file (Nov 14) again
+> countdown showing. v1.1.9 makes the panel resizable (drag its
+> left edge, 280–700px, double-click to reset to 430px; the width
+> persists and the collapse offset + toggle follow it) and makes
+> Start navigate to the create form immediately when not already
+> there — the queue then waits on the create form if posting
+> hours are off-window. A second view-source file (Nov 14) again
 > contained NO rendered DOM — only JS bundle names — so it cannot
 > settle the selectors. Tags + Availability + the Next → Publish
-> flow + the Make/schedule logic are harness-tested but **not yet
-> verified live** — run the Fill-only dry-run (Step 3 below) and
-> check the Console tab before auto-publish.
+> flow + the Make/schedule/resize logic are harness-tested but
+> **not yet verified live** — run the Fill-only dry-run (Step 3
+> below) and check the Console tab before auto-publish.
 
 ## What it does
 
 - **Dashboard panel** on every Marketplace page (right side, collapsible):
   Listings, Queue, Add/Edit, Renew, Settings, Console (live log + next-post countdown).
+  Drag the panel's left edge to resize it (280–700px, saved; double-click the
+  edge to reset to 430px).
 - **20–50 prepared listings.** Ships with the buyer's own 10 examples as
   templates. Add more in Add/Edit, or Duplicate a template and change the
   city/service.
@@ -77,8 +84,10 @@ Tampermonkey storage in the browser.
   listing has a **Vehicle Make** field (dropdown + custom-make box)
   driving `{make}`, so the same service can vary across makes.
 - **Queue + schedule.** Tick listings, Start queue, set the interval
-  (default 3–5 minutes, randomised). The queue survives page changes —
-  keep the tab open. Max per run is capped in Settings (default 10).
+  (default 3–5 minutes, randomised). Start navigates to the create
+  form automatically when not already there, and the queue resumes
+  there. The queue survives page changes — keep the tab open. Max
+  per run is capped in Settings (default 10).
   **Posting hours** (Settings, off by default) restrict queue runs to a
   local-time window — overnight windows like 22:00–06:00 work, and
   outside the window the queue waits with the countdown showing.
@@ -221,7 +230,7 @@ selectors. Instead, do one of these on the create page:
 
 ## What was tested (Nov 14, 2026)
 
-- `node --check` — syntax OK (1,997 lines, ~103 KB).
+- `node --check` — syntax OK (2,065 lines, ~106 KB).
 - Logic harness (21 checks, all pass): 10 seed listings, 40 services,
   7 cities, 26 FB categories + 4 conditions + 2 availability options,
   dropdown option builder (blank first, custom value preserved),
@@ -286,6 +295,12 @@ selectors. Instead, do one of these on the create page:
   always-on equal start/end case; wait-until-window math (2h/11h/12h
   cases); the schedule gate returns 0 when off, inside the window,
   or given invalid times; schedule defaults off, 09:00–21:00.
+- Resize/navigation harness (20 checks, all pass): width clamping
+  (280–700px, rounded, invalid input falls back to 430px), drag
+  math (panel right edge minus pointer x, clamped both ways), the
+  create-page predicate Start uses (create/item and create/vehicle
+  count; home, browse and selling pages do not), and the 430px
+  width default in settings.
 - Panel smoke test (fake DOM): script boots without errors, listings
   render with names, NO PHOTOS badges, uploaded/link counts and queue
   button after the async photo-count refresh.
@@ -294,15 +309,18 @@ selectors. Instead, do one of these on the create page:
   attach worked). Nov 14: Category selection CONFIRMED WORKING.
   Product tags + Availability (v1.1.5), the Next → Publish +
   return-to-create-form flow (v1.1.6), the Console + countdown
-  (v1.1.7) and the Make field + posting-hours gate (v1.1.8) are
-  harness-tested only — live verification of tags, availability,
-  location selection, attach, Publish and Renew is still open (Step
-  3 above, or a live browser session on the test account). Condition
+  (v1.1.7), the Make field + posting-hours gate (v1.1.8) and the
+  resizable panel + Start navigation (v1.1.9) are harness-tested
+  only — live verification of tags, availability, location
+  selection, attach, Publish and Renew is still open (Step 3
+  above, or a live browser session on the test account). Condition
   option names are the standard Facebook names, unverified live.
   Photo copy/delete on Duplicate/Delete share the tested IndexedDB
-  patterns but were not individually harness-tested.
+  patterns but were not individually harness-tested. The resize
+  drag itself needs a live browser check (the math is tested; the
+  pointer handling is not).
 
 ## Files
 
-- `locksmith-marketplace-poster.user.js` — the script (v1.1.8).
+- `locksmith-marketplace-poster.user.js` — the script (v1.1.9).
 - `README.md` — this file.

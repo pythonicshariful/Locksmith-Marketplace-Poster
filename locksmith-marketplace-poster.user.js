@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Locksmith Marketplace Poster (Standalone)
 // @namespace    https://locksmith-marketplace-poster.local
-// @version      1.1.8
+// @version      1.1.9
 // @description  Standalone Facebook Marketplace auto-listing panel for locksmith services. No server needed: listings, variation, schedule and queue all live in Tampermonkey storage; photos can be uploaded from your computer (stored in the browser) or given as image links. Fill-only dry-run mode included for safe live testing.
 // @author       Shariful Islam
 // @match        https://www.facebook.com/marketplace/*
@@ -14,7 +14,7 @@
 // @run-at       document-idle
 // ==/UserScript==
 /*
- * Locksmith Marketplace Poster — STANDALONE v1.1.8
+ * Locksmith Marketplace Poster — STANDALONE v1.1.9
  * -------------------------------------------------
  * Built for hammadsolomon (Fiverr order FO5234353C085, $200 one-time).
  * Requirements covered:
@@ -93,6 +93,13 @@
  *    only run inside the chosen local-time window (overnight
  *    windows work; same start/end = always on), waiting with the
  *    countdown showing until the window opens.
+ *  - v1.1.9 makes the panel resizable: drag its left edge (280-700px,
+ *    double-click the edge to reset to 430px); the width persists in
+ *    settings and the collapse offset + toggle follow it via a CSS
+ *    variable. Starting the queue now navigates to the create form
+ *    immediately when not already there (the step-level check stays
+ *    as a safety net, and now runs before the posting-hours gate so
+ *    the queue waits on the create form, not on a random page).
  *
  * LIVE-TEST STATUS: local syntax + logic tests pass. Facebook form
  * selectors have NOT been verified against a live logged-in Marketplace
@@ -211,7 +218,8 @@ const DEFAULT_SETTINGS = {
   availabilityDefault: '',
   scheduleEnabled: false,
   scheduleStart: '09:00',
-  scheduleEnd: '21:00'
+  scheduleEnd: '21:00',
+  panelWidth: 430
 };
 
 /* Seed listings: the buyer's own 10 examples (Nov 8), turned into
@@ -1408,14 +1416,6 @@ async function runQueueStep() {
       q.items.filter(i => i.status === 'failed').length + ' failed.', 'ok');
     renderPanel(); return;
   }
-  // Posting-hours gate: outside the window, wait until it opens
-  // instead of filling/posting. The countdown shows the wait, and
-  // the planned nextAt survives reloads via the boot resume.
-  const gateDelay = scheduleGateDelayMs(settings, new Date());
-  if (gateDelay > 0) {
-    addLog('Outside posting hours (' + settings.scheduleStart + '–' + settings.scheduleEnd + ' local) — next post when the window opens in ' + formatCountdown(gateDelay) + '.');
-    return scheduleNextStep(gateDelay);
-  }
   const item = q.items[q.index];
   const listings = loadListings();
   const listing = listings.find(l => l.id === item.listingId);
@@ -1428,6 +1428,16 @@ async function runQueueStep() {
     saveQueue(q);
     location.href = CREATE_ITEM_URL;
     return; // boot() on the new page resumes the queue.
+  }
+  // Posting-hours gate (after the navigation check, so the queue
+  // waits on the create form, not on a random page): outside the
+  // window, wait until it opens instead of filling/posting. The
+  // countdown shows the wait, and the planned nextAt survives
+  // reloads via the boot resume.
+  const gateDelay = scheduleGateDelayMs(settings, new Date());
+  if (gateDelay > 0) {
+    addLog('Outside posting hours (' + settings.scheduleStart + '–' + settings.scheduleEnd + ' local) — next post when the window opens in ' + formatCountdown(gateDelay) + '.');
+    return scheduleNextStep(gateDelay);
   }
   item.status = 'posting'; saveQueue(q); renderPanel();
   await sleep(2000);
@@ -1498,6 +1508,14 @@ function startQueue(selectedIds) {
   saveQueue(q);
   addLog('Queue started: ' + items.length + ' listing(s), mode: ' +
     (loadSettings().autoPublish ? 'Fill + Publish' : 'Fill-only (dry-run)'));
+  // Start always lands on the create form: if the user pressed Start
+  // from another Marketplace page, go there now; boot() resumes the
+  // queue on arrival. (runQueueStep re-checks as a safety net.)
+  if (!isCreatePage()) {
+    addLog('Opening the create page — the queue will start there.');
+    location.href = CREATE_ITEM_URL;
+    return;
+  }
   runQueueStep();
 }
 function stopQueue() {
@@ -1551,9 +1569,12 @@ async function renewAllFound(delaySec) {
 /* ============================ PANEL UI ============================== */
 
 const PANEL_CSS = `
-#lmp-panel{position:fixed;top:0;right:0;width:430px;max-width:94vw;height:100vh;background:#101828;color:#e6e9ef;font-family:'Segoe UI',system-ui,-apple-system,sans-serif;z-index:999999;box-shadow:-4px 0 24px rgba(0,0,0,.5);display:flex;flex-direction:column;overflow:hidden}
-#lmp-panel.lmp-collapsed{transform:translateX(390px)}
-#lmp-toggle{position:fixed;top:50%;right:430px;transform:translateY(-50%);width:32px;height:64px;background:#0e9384;border:none;border-radius:8px 0 0 8px;color:#fff;cursor:pointer;z-index:999999;font-size:15px}
+:root{--lmp-w:430px}
+#lmp-panel{position:fixed;top:0;right:0;width:var(--lmp-w,430px);max-width:94vw;height:100vh;background:#101828;color:#e6e9ef;font-family:'Segoe UI',system-ui,-apple-system,sans-serif;z-index:999999;box-shadow:-4px 0 24px rgba(0,0,0,.5);display:flex;flex-direction:column;overflow:hidden}
+#lmp-panel.lmp-collapsed{transform:translateX(calc(var(--lmp-w,430px) - 40px))}
+#lmp-resize{position:absolute;left:0;top:0;bottom:0;width:8px;cursor:ew-resize;z-index:5;touch-action:none}
+#lmp-resize:hover,#lmp-resize.lmp-dragging{background:rgba(45,212,191,.4)}
+#lmp-toggle{position:fixed;top:50%;right:var(--lmp-w,430px);transform:translateY(-50%);width:32px;height:64px;background:#0e9384;border:none;border-radius:8px 0 0 8px;color:#fff;cursor:pointer;z-index:999999;font-size:15px}
 #lmp-panel.lmp-collapsed + #lmp-toggle, #lmp-toggle.lmp-collapsed{right:40px}
 #lmp-head{background:linear-gradient(135deg,#0e9384,#1849a9);padding:12px 14px}
 #lmp-head h1{margin:0;font-size:16px;color:#fff}
@@ -1602,6 +1623,50 @@ let searchText = '';
 
 function panelEl() { return document.getElementById('lmp-panel'); }
 
+/* ---- Panel resize: drag the left edge; width persists in settings.
+ * The width lives in --lmp-w on :root so the panel, its collapsed
+ * offset (width - 40px) and the toggle all follow one value. ---- */
+const PANEL_MIN_W = 280, PANEL_MAX_W = 700, PANEL_DEFAULT_W = 430;
+function clampPanelWidth(w) {
+  const n = Number(w);
+  if (!isFinite(n)) return PANEL_DEFAULT_W;
+  return Math.max(PANEL_MIN_W, Math.min(PANEL_MAX_W, Math.round(n)));
+}
+function panelWidthFromX(rectRight, clientX) { return clampPanelWidth(rectRight - clientX); }
+function applyPanelWidth(w) {
+  try { document.documentElement.style.setProperty('--lmp-w', clampPanelWidth(w) + 'px'); } catch (e) {}
+}
+function attachPanelResize(panel) {
+  const grip = document.createElement('div');
+  grip.id = 'lmp-resize';
+  grip.title = 'Drag to resize the panel (double-click to reset)';
+  panel.appendChild(grip);
+  let dragging = false;
+  grip.addEventListener('pointerdown', (e) => {
+    if (panel.classList.contains('lmp-collapsed')) return;
+    dragging = true; grip.classList.add('lmp-dragging');
+    try { grip.setPointerCapture(e.pointerId); } catch (err) {}
+    e.preventDefault();
+  });
+  grip.addEventListener('pointermove', (e) => {
+    if (!dragging) return;
+    applyPanelWidth(panelWidthFromX(panel.getBoundingClientRect().right, e.clientX));
+  });
+  const finish = () => {
+    if (!dragging) return;
+    dragging = false; grip.classList.remove('lmp-dragging');
+    const s = loadSettings();
+    s.panelWidth = clampPanelWidth(panel.getBoundingClientRect().width);
+    saveSettings(s);
+  };
+  grip.addEventListener('pointerup', finish);
+  grip.addEventListener('pointercancel', finish);
+  grip.addEventListener('dblclick', () => {
+    applyPanelWidth(PANEL_DEFAULT_W);
+    const s = loadSettings(); s.panelWidth = PANEL_DEFAULT_W; saveSettings(s);
+  });
+}
+
 function buildPanel() {
   if (panelEl()) return;
   if (typeof GM_addStyle === 'function') { try { GM_addStyle(PANEL_CSS); } catch (e) {} }
@@ -1610,7 +1675,7 @@ function buildPanel() {
   panel.id = 'lmp-panel';
   panel.innerHTML =
     '<div id="lmp-head"><h1>🔑 Locksmith Marketplace Poster</h1>' +
-    '<p>Standalone v1.1.8 &nbsp;•&nbsp; No server &nbsp;•&nbsp; Account: this Chrome profile\'s logged-in Facebook account</p></div>' +
+    '<p>Standalone v1.1.9 &nbsp;•&nbsp; No server &nbsp;•&nbsp; Account: this Chrome profile\'s logged-in Facebook account</p></div>' +
     '<div class="lmp-tabs">' +
     '<button class="lmp-tab" data-tab="listings">Listings</button>' +
     '<button class="lmp-tab" data-tab="queue">Queue</button>' +
@@ -1621,6 +1686,8 @@ function buildPanel() {
     '<div id="lmp-body"></div>' +
     '<div id="lmp-status"><span id="lmp-status-text" role="status" aria-live="polite" aria-atomic="true">Ready.</span><span class="lmp-countdown" aria-hidden="true">Queue idle</span></div>';
   document.body.appendChild(panel);
+  applyPanelWidth(loadSettings().panelWidth);
+  attachPanelResize(panel);
   const toggle = document.createElement('button');
   toggle.id = 'lmp-toggle'; toggle.textContent = '◀'; toggle.title = 'Show / hide panel';
   toggle.addEventListener('click', () => {
@@ -1960,7 +2027,7 @@ function boot() {
   try { if (window.top !== window.self) return; } catch (e) { return; }
   buildPanel();
   refreshPhotoCounts();
-  addLog('Locksmith Poster ready (standalone v1.1.8). ' +
+  addLog('Locksmith Poster ready (standalone v1.1.9). ' +
     (loadSettings().autoPublish ? 'Mode: Fill + Publish.' : 'Mode: Fill-only dry-run — safe to test.'));
   const q = loadQueue();
   if (q.running && q.items.length && q.index < q.items.length) {
@@ -1978,10 +2045,11 @@ function boot() {
 // Debug/test handle (read-only helpers + state). Harmless in production.
 try {
   window.LMP = {
-    version: '1.1.8', spinText, applyTokens, renderListing, pickPrice,
+    version: '1.1.9', spinText, applyTokens, renderListing, pickPrice,
     seedListings, loadListings, loadSettings, CITIES, ALL_SERVICES,
     MAKES, listingMake, FB_CATEGORIES, FB_CONDITIONS, FB_AVAILABILITY, dropdownOpts,
     parseHHMM, inPostingWindow, msUntilWindow, scheduleGateDelayMs,
+    clampPanelWidth, panelWidthFromX, isCreatePage, PANEL_DEFAULT_W,
     photoStoreAvailable, resolveListingPhotoFiles, getStoredPhotos, storePhotos,
     findInputByLabels, humanType, setEditableText, logFieldDiagnostics, setLocation,
     fillProductTags, selectFromDropdown, findCombobox, dropdownDialog,
