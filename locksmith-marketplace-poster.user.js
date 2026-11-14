@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Locksmith Marketplace Poster (Standalone)
 // @namespace    https://locksmith-marketplace-poster.local
-// @version      1.1.4
+// @version      1.1.5
 // @description  Standalone Facebook Marketplace auto-listing panel for locksmith services. No server needed: listings, variation, schedule and queue all live in Tampermonkey storage; photos can be uploaded from your computer (stored in the browser) or given as image links. Fill-only dry-run mode included for safe live testing.
 // @author       Shariful Islam
 // @match        https://www.facebook.com/marketplace/*
@@ -14,7 +14,7 @@
 // @run-at       document-idle
 // ==/UserScript==
 /*
- * Locksmith Marketplace Poster — STANDALONE v1.1.4
+ * Locksmith Marketplace Poster — STANDALONE v1.1.5
  * -------------------------------------------------
  * Built for hammadsolomon (Fiverr order FO5234353C085, $200 one-time).
  * Requirements covered:
@@ -58,6 +58,15 @@
  *    pointer sequences on option clicks and random pauses between
  *    fill steps. The queue already auto-posts one listing after
  *    another with a random delay inside the Settings interval.
+ *  - v1.1.5 adds Product tags from the live field HTML (bare textarea
+ *    wrapped in a "Product tags" label, chips in a role="list"): the
+ *    finder now also reads a wrapping label's span text, each
+ *    comma-separated tag is typed and committed with Enter, and the
+ *    chip count verifies the commit. Tags live in Edit / Settings
+ *    defaults and support {city}/{service} tokens. Also adds
+ *    Availability (same combobox pattern, role="option" rows: "List
+ *    as Single Item" / "List as In Stock") as an Edit / Settings
+ *    dropdown.
  *
  * LIVE-TEST STATUS: local syntax + logic tests pass. Facebook form
  * selectors have NOT been verified against a live logged-in Marketplace
@@ -129,6 +138,11 @@ const FB_CATEGORIES = [
  * live Condition dialog. If a name misses, the Log lists the real
  * option names from the dialog; type the exact one in the custom box. */
 const FB_CONDITIONS = ['New', 'Used - Like New', 'Used - Good', 'Used - Fair'];
+/* Availability options, copied exactly from the live combobox
+ * (Nov 14). Facebook defaults to "List as Single Item"; "List as
+ * In Stock" suits an ongoing service. Blank = leave Facebook's
+ * default untouched. */
+const FB_AVAILABILITY = ['List as Single Item', 'List as In Stock'];
 
 function dropdownOpts(list, current, blankLabel) {
   let h = '<option value="">' + esc(blankLabel || '— Skip —') + '</option>';
@@ -154,7 +168,9 @@ const DEFAULT_SETTINGS = {
   maxPerRun: 10,
   stopOnError: false,
   categoryDefault: '',
-  conditionDefault: ''
+  conditionDefault: '',
+  tagsDefault: '',
+  availabilityDefault: ''
 };
 
 /* Seed listings: the buyer's own 10 examples (Nov 8), turned into
@@ -166,7 +182,8 @@ function seedListings() {
   const base = (id, name, service, city, price, priceVary, title, desc) => ({
     id, name, service, city, price, priceVary,
     titleTemplate: title, descriptionTemplate: desc,
-    category: '', condition: '', images: [], enabled: true, createdAt: Date.now()
+    category: '', condition: '', tags: '', availability: '',
+    images: [], enabled: true, createdAt: Date.now()
   });
   return [
     base('seed-01', 'Car Lockout — Tampa', 'Car Lockout', 'Tampa, FL', 60, 10,
@@ -641,7 +658,7 @@ async function humanType(el, text, settings) {
  * aria-labelledby targets, placeholder, name, title, label[for], and
  * data-testid. Returns lowercase parts for scoring. */
 function fieldLabelText(el) {
-  const parts = { aria: '', labelledby: '', ph: '', name: '', testid: '', forLabel: '' };
+  const parts = { aria: '', labelledby: '', ph: '', name: '', testid: '', forLabel: '', wrapLabel: '' };
   try { parts.aria = (el.getAttribute('aria-label') || '').toLowerCase().trim(); } catch (e) {}
   try {
     const lb = el.getAttribute('aria-labelledby') || '';
@@ -660,14 +677,27 @@ function fieldLabelText(el) {
       if (lab) parts.forLabel = allText(lab).toLowerCase();
     }
   } catch (e) {}
+  try {
+    // Wrapping label: some Facebook fields (Product tags) are a bare
+    // textarea inside a <label> whose first span is the field name.
+    const wrap = el.closest ? el.closest('label') : null;
+    if (wrap && wrap !== el) {
+      const spans = wrap.querySelectorAll('span');
+      for (const sp of spans) {
+        if (sp.contains && sp.contains(el)) continue;
+        const t = allText(sp);
+        if (t && t.length <= 40) { parts.wrapLabel = t.toLowerCase(); break; }
+      }
+    }
+  } catch (e) {}
   return parts;
 }
-/* Text of the nearest visible label-like element within 3 ancestors:
+/* Text of the nearest visible label-like element within 5 ancestors:
  * covers Facebook's floating/adjacent labels with no aria wiring. */
 function nearbyLabelText(el) {
   try {
     let node = el;
-    for (let depth = 0; depth < 3 && node; depth++) {
+    for (let depth = 0; depth < 5 && node; depth++) {
       node = node.parentElement;
       if (!node) break;
       const kids = node.querySelectorAll('label, span');
@@ -701,10 +731,10 @@ function scoreField(el, labels, preferEditable) {
     let s = 0;
     if (parts.aria === want) s = Math.max(s, 100);
     if (parts.ph === want) s = Math.max(s, 90);
-    if (parts.labelledby === want || parts.forLabel === want) s = Math.max(s, 85);
+    if (parts.labelledby === want || parts.forLabel === want || parts.wrapLabel === want) s = Math.max(s, 85);
     if (near === want) s = Math.max(s, 80);
     if (parts.aria.includes(want) || parts.ph.includes(want)) s = Math.max(s, 45);
-    if (parts.labelledby.includes(want) || parts.forLabel.includes(want) || near.includes(want)) s = Math.max(s, 40);
+    if (parts.labelledby.includes(want) || parts.forLabel.includes(want) || parts.wrapLabel.includes(want) || near.includes(want)) s = Math.max(s, 40);
     if (parts.testid.includes(want.replace(/\s+/g, ''))) s = Math.max(s, 40);
     if (parts.name.includes(want)) s = Math.max(s, 30);
     best = Math.max(best, s);
@@ -772,7 +802,59 @@ async function fillTextField(labels, value, settings, fieldName) {
   return true;
 }
 
-/* ---- Dropdowns (Category / Condition) ----
+/* ---- Product tags ----
+ * Live DOM (Nov 14): a <label> wrapping a "Product tags" span, a
+ * <div role="list"> that holds the added tag chips, and a bare
+ * <textarea> with no aria-label/placeholder. The textarea is found
+ * via its wrapping label's span text (see wrapLabel in
+ * fieldLabelText). Each tag is typed, then committed with Enter;
+ * chip count before/after verifies the commit. Tags support
+ * {city}/{service} tokens via applyTokens. */
+function tagChipCount(el) {
+  try {
+    const lab = el.closest ? el.closest('label') : null;
+    const list = lab ? lab.querySelector('[role="list"]') : null;
+    return list ? list.children.length : -1;
+  } catch (e) { return -1; }
+}
+async function fillProductTags(tagsText, listing, settings) {
+  if (!tagsText) return true;
+  const resolved = applyTokens(tagsText, listing || {});
+  const tags = resolved.split(',').map(s => s.trim()).filter(Boolean).slice(0, 10);
+  if (!tags.length) return true;
+  const el = await waitFor(() => findInputByLabels(['product tags', 'tags']), 10000);
+  if (!el) { addLog('Product tags field not found — left for manual entry.', 'warn'); return false; }
+  const before = tagChipCount(el);
+  try { el.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch (e) {}
+  await randDelay(200, 500);
+  for (const tag of tags) {
+    await humanType(el, tag, settings);
+    el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+    el.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', bubbles: true }));
+    await randDelay(500, 900);
+    // If Enter did not commit, the text is still in the box; clear it
+    // so the next tag starts clean (the chip-count check below
+    // reports the uncommitted tag).
+    try {
+      const leftover = String(el.value || el.textContent || '').trim();
+      if (leftover) {
+        if (el.isContentEditable) { await setEditableText(el, '', settings); }
+        else setReactValue(el, '');
+      }
+    } catch (e) {}
+    await randDelay(200, 500);
+  }
+  const after = tagChipCount(el);
+  if (before >= 0 && after >= 0) {
+    if (after > before) { addLog('Product tags added (' + (after - before) + '): ' + tags.join(', ')); return true; }
+    addLog('Product tags typed but no tag chips appeared — check them on screen.', 'warn');
+    return false;
+  }
+  addLog('Product tags typed: ' + tags.join(', '));
+  return true;
+}
+
+/* ---- Dropdowns (Category / Condition / Availability) ----
  * Live DOM (Nov 14): the field is a <label role="combobox"
  * aria-labelledby="<id of the 'Category' span>" aria-expanded>.
  * Clicking it opens a <div role="dialog" aria-label="Dropdown menu">
@@ -848,7 +930,7 @@ function findDropdownOption(dialog, optionText) {
 function listDropdownOptions(dialog) {
   try {
     const scope = dialog || document;
-    return Array.from(scope.querySelectorAll('[role="button"]'))
+    return Array.from(scope.querySelectorAll('[role="option"], [role="menuitem"], [role="button"]'))
       .filter(o => !inPanel(o) && visible(o))
       .map(o => optionTitleText(o)).filter(Boolean).slice(0, 30);
   } catch (e) { return []; }
@@ -873,7 +955,10 @@ async function selectFromDropdown(labels, optionText, fieldName) {
     trigger.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
     await sleep(900);
   }
-  const dialog = await waitFor(() => dropdownDialog(), 6000);
+  // Short dialog wait: some popovers (Availability) carry no dialog/
+  // listbox role, so the option search below falls back to document
+  // scope. A long wait here would only delay that fallback.
+  const dialog = await waitFor(() => dropdownDialog(), 2000);
   if (dialog) {
     // Only type into a search box INSIDE the dialog. Never into the
     // page's own search box (an earlier version could do that).
@@ -1108,8 +1193,14 @@ async function fillListingForm(listing, rendered, settings) {
   if (condition) await selectFromDropdown(['condition', 'item condition'], condition, 'Condition');
   else addLog('Condition not set — skipped. Pick one in Edit or Settings (Default condition).', 'warn');
   await randDelay(400, 1000);
+  const availability = listing.availability || settings.availabilityDefault;
+  if (availability) await selectFromDropdown(['availability'], availability, 'Availability');
+  else addLog('Availability not set — leaving Facebook default (List as Single Item).', 'warn');
+  await randDelay(400, 1000);
   await fillTextField(['description', 'item description'], rendered.description, settings, 'Description');
   await randDelay(400, 1000);
+  const tagsText = listing.tags || settings.tagsDefault;
+  if (tagsText) await fillProductTags(tagsText, listing, settings);
   await setLocation(rendered.city, settings);
   return { photos };
 }
@@ -1324,7 +1415,7 @@ function buildPanel() {
   panel.id = 'lmp-panel';
   panel.innerHTML =
     '<div id="lmp-head"><h1>🔑 Locksmith Marketplace Poster</h1>' +
-    '<p>Standalone v1.1.4 &nbsp;•&nbsp; No server &nbsp;•&nbsp; Account: this Chrome profile\'s logged-in Facebook account</p></div>' +
+    '<p>Standalone v1.1.5 &nbsp;•&nbsp; No server &nbsp;•&nbsp; Account: this Chrome profile\'s logged-in Facebook account</p></div>' +
     '<div class="lmp-tabs">' +
     '<button class="lmp-tab" data-tab="listings">Listings</button>' +
     '<button class="lmp-tab" data-tab="queue">Queue</button>' +
@@ -1416,7 +1507,7 @@ function queueHtml() {
 function editorHtml() {
   const listings = loadListings();
   const l = editingId ? listings.find(x => x.id === editingId) : null;
-  const v = l || { name: '', service: ALL_SERVICES[0], city: CITIES[0], price: 60, priceVary: 10, titleTemplate: '', descriptionTemplate: '', category: '', condition: '', images: [] };
+  const v = l || { name: '', service: ALL_SERVICES[0], city: CITIES[0], price: 60, priceVary: 10, titleTemplate: '', descriptionTemplate: '', category: '', condition: '', tags: '', availability: '', images: [] };
   const serviceOpts = Object.keys(SERVICES).map(g =>
     '<optgroup label="' + esc(g) + '">' + SERVICES[g].map(s =>
       '<option' + (s === v.service ? ' selected' : '') + '>' + esc(s) + '</option>').join('') + '</optgroup>').join('');
@@ -1433,6 +1524,8 @@ function editorHtml() {
     '<input id="f-cat-custom" class="lmp-input" style="margin-top:4px" placeholder="Or type exact FB name (wins over the list)"></div>' +
     '<div><div class="lmp-label">Condition</div><select id="f-cond" class="lmp-select">' + dropdownOpts(FB_CONDITIONS, v.condition, '— Skip condition —') + '</select>' +
     '<input id="f-cond-custom" class="lmp-input" style="margin-top:4px" placeholder="Or type exact FB name (wins over the list)"></div></div>';
+  h += '<div class="lmp-row"><div><div class="lmp-label">Availability</div><select id="f-avail" class="lmp-select">' + dropdownOpts(FB_AVAILABILITY, v.availability, '— Leave Facebook default —') + '</select></div>' +
+    '<div><div class="lmp-label">Product tags — comma-separated ({city} {service} work)</div><input id="f-tags" class="lmp-input" value="' + esc(v.tags || '') + '" placeholder="e.g. locksmith, car key, {city}"></div></div>';
   h += '<div class="lmp-label">Photos — upload from this computer (recommended)</div>';
   h += '<input id="f-upload" class="lmp-input" type="file" accept="image/*" multiple>';
   h += '<div id="lmp-pending"></div><div id="lmp-thumbs"></div>';
@@ -1468,6 +1561,8 @@ function settingsHtml() {
     '<input id="s-cat-custom" class="lmp-input" style="margin-top:4px" placeholder="Or type exact FB name (wins over the list)">';
   h += '<div class="lmp-label">Default condition (used when a listing has none)</div><select id="s-cond" class="lmp-select">' + dropdownOpts(FB_CONDITIONS, s.conditionDefault, '— Skip condition —') + '</select>' +
     '<input id="s-cond-custom" class="lmp-input" style="margin-top:4px" placeholder="Or type exact FB name (wins over the list)">';
+  h += '<div class="lmp-label">Default availability (used when a listing has none)</div><select id="s-avail" class="lmp-select">' + dropdownOpts(FB_AVAILABILITY, s.availabilityDefault, '— Leave Facebook default —') + '</select>';
+  h += '<div class="lmp-label">Default product tags — comma-separated (used when a listing has none)</div><input id="s-tags" class="lmp-input" value="' + esc(s.tagsDefault || '') + '" placeholder="e.g. locksmith, {service}, {city}">';
   h += '<button class="lmp-btn lmp-wide" data-act="save-settings">Save settings</button>';
   h += '<h3 style="margin:16px 0 6px">Backup / restore</h3>';
   h += '<button class="lmp-btn lmp-secondary" data-act="export">Export listings (JSON)</button>' +
@@ -1580,6 +1675,8 @@ function handleAction(act, body) {
       titleTemplate: title, descriptionTemplate: desc,
       category: document.getElementById('f-cat-custom').value.trim() || document.getElementById('f-cat').value,
       condition: document.getElementById('f-cond-custom').value.trim() || document.getElementById('f-cond').value,
+      availability: document.getElementById('f-avail').value,
+      tags: document.getElementById('f-tags').value.trim(),
       images, enabled: true
     };
     const wasEdit = !!editingId;
@@ -1624,6 +1721,8 @@ function handleAction(act, body) {
     s.stopOnError = document.getElementById('s-stoperr').checked;
     s.categoryDefault = document.getElementById('s-cat-custom').value.trim() || document.getElementById('s-cat').value;
     s.conditionDefault = document.getElementById('s-cond-custom').value.trim() || document.getElementById('s-cond').value;
+    s.availabilityDefault = document.getElementById('s-avail').value;
+    s.tagsDefault = document.getElementById('s-tags').value.trim();
     saveSettings(s); addLog('Settings saved. Auto-publish: ' + (s.autoPublish ? 'ON' : 'OFF')); renderPanel();
   }
   else if (act === 'export') {
@@ -1650,7 +1749,7 @@ function boot() {
   try { if (window.top !== window.self) return; } catch (e) { return; }
   buildPanel();
   refreshPhotoCounts();
-  addLog('Locksmith Poster ready (standalone v1.1.4). ' +
+  addLog('Locksmith Poster ready (standalone v1.1.5). ' +
     (loadSettings().autoPublish ? 'Mode: Fill + Publish.' : 'Mode: Fill-only dry-run — safe to test.'));
   const q = loadQueue();
   if (q.running && q.items.length && q.index < q.items.length) {
@@ -1662,12 +1761,12 @@ function boot() {
 // Debug/test handle (read-only helpers + state). Harmless in production.
 try {
   window.LMP = {
-    version: '1.1.4', spinText, applyTokens, renderListing, pickPrice,
+    version: '1.1.5', spinText, applyTokens, renderListing, pickPrice,
     seedListings, loadListings, loadSettings, CITIES, ALL_SERVICES,
-    FB_CATEGORIES, FB_CONDITIONS, dropdownOpts,
+    FB_CATEGORIES, FB_CONDITIONS, FB_AVAILABILITY, dropdownOpts,
     photoStoreAvailable, resolveListingPhotoFiles, getStoredPhotos, storePhotos,
     findInputByLabels, humanType, setEditableText, logFieldDiagnostics, setLocation,
-    selectFromDropdown, findCombobox, dropdownDialog
+    fillProductTags, selectFromDropdown, findCombobox, dropdownDialog
   };
 } catch (e) {}
 

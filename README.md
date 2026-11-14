@@ -1,36 +1,41 @@
 # Locksmith Marketplace Poster — Standalone (Tampermonkey)
 
-**Version 1.1.4 — for hammadsolomon (Fiverr order FO5234353C085)**
+**Version 1.1.5 — for hammadsolomon (Fiverr order FO5234353C085)**
 
 A standalone Tampermonkey userscript that fills and posts Facebook Marketplace
 listings for locksmith services from a side panel. **No server, no Python, no
 Flask.** Listings, settings, queue and variation history all live in
 Tampermonkey storage in the browser.
 
-> **Live-test status: CATEGORY STILL NOT SELECTING (Nov 14) — v1.1.4
-> ADDS UI DROPDOWNS + VISIBLE SKIP WARNINGS, LIVE BROWSER CHECK STILL
-> NEEDED.** The first live run (v1.1.0) reported "Field not found:
-> Description" and left Title/Price empty — the finder only looked for
-> plain inputs/textareas, while Facebook's Description is a rich-text
-> (Lexical) editor. v1.1.1 matches contenteditable editors,
-> aria-labelledby, name/id and nearby labels, expands "More details",
-> and logs field diagnostics. v1.1.2 fixes location from the live
-> listbox DOM: after typing, it clicks the FIRST suggestion row (the
-> city itself) with a full pointer/mouse sequence, verifies the
-> listbox closed, and falls back to ArrowDown + Enter. v1.1.3 fixes
-> Category/Condition from the live combobox + dropdown-dialog DOM: the
-> combobox is found via aria-labelledby, the option is matched by its
-> first name span (subtitles ignored, headers never clicked), and a
-> miss logs every available option name. v1.1.4: Category/Condition
-> are now dropdowns in Edit + Settings (26 real Facebook category
-> names from the live dialog, custom-name override box), a blank
-> Category/Condition now logs a visible warning instead of skipping
-> silently, and clicks/pauses are more human-like. A second
-> view-source file (Nov 14) again contained NO rendered DOM — only JS
-> bundle names — so it cannot settle the selectors; a live browser
-> session on the test account is the remaining step. Fixes are
-> harness-tested but **not yet re-verified live** — run the Fill-only
-> dry-run (Step 3 below) and check the Log tab before auto-publish.
+> **Live-test status: CATEGORY CONFIRMED WORKING (Nov 14) — v1.1.5
+> ADDS PRODUCT TAGS + AVAILABILITY FROM LIVE FIELD HTML.** The first
+> live run (v1.1.0) reported "Field not found: Description" and left
+> Title/Price empty — the finder only looked for plain inputs/
+> textareas, while Facebook's Description is a rich-text (Lexical)
+> editor. v1.1.1 matches contenteditable editors, aria-labelledby,
+> name/id and nearby labels, expands "More details", and logs field
+> diagnostics. v1.1.2 fixes location from the live listbox DOM: after
+> typing, it clicks the FIRST suggestion row (the city itself) with a
+> full pointer/mouse sequence, verifies the listbox closed, and falls
+> back to ArrowDown + Enter. v1.1.3 fixes Category/Condition from the
+> live combobox + dropdown-dialog DOM: the combobox is found via
+> aria-labelledby, the option is matched by its first name span
+> (subtitles ignored, headers never clicked), and a miss logs every
+> available option name. v1.1.4: Category/Condition are now dropdowns
+> in Edit + Settings (26 real Facebook category names from the live
+> dialog, custom-name override box), a blank Category/Condition now
+> logs a visible warning instead of skipping silently, and
+> clicks/pauses are more human-like. Category selection was confirmed
+> working on Nov 14. v1.1.5 adds Product tags (bare textarea inside a
+> "Product tags" label; each comma-separated tag typed + Enter, chip
+> count verifies the commit; {city}/{service} tokens supported) and
+> Availability ("List as Single Item" / "List as In Stock", same
+> combobox pattern with role="option" rows) as Edit + Settings
+> dropdowns. A second view-source file (Nov 14) again contained NO
+> rendered DOM — only JS bundle names — so it cannot settle the
+> selectors. Tags + Availability are harness-tested but **not yet
+> verified live** — run the Fill-only dry-run (Step 3 below) and check
+> the Log tab before auto-publish.
 
 ## What it does
 
@@ -127,10 +132,13 @@ Facebook before publishing.
 - **Renew is best-effort.** Facebook shows Renew only for some listings,
   sometimes only inside each listing's "..." menu. If no Renew controls
   are found, the panel says so. Verify one renew by hand first.
-- **Category/Condition are optional and best-effort.** Leave them blank
-  to skip, or type the exact category name as Facebook shows it on your
-  account. If the option isn't found, the field is left for manual
-  selection and the run continues.
+- **Category/Condition/Availability/Product tags are optional and
+  best-effort.** Leave them blank to skip (Availability blank leaves
+  Facebook's default "List as Single Item"), or type the exact name
+  as Facebook shows it on your account. If an option isn't found, the
+  field is left for manual selection and the run continues. Product
+  tags are comma-separated; the script types each tag and presses
+  Enter, and warns if no tag chips appear.
 - **No safety guarantee.** Start slow (a few listings/day), warm up new
   accounts, and stop immediately on any Facebook warning, checkpoint or
   restriction. No posting volume is 100% safe.
@@ -180,16 +188,17 @@ selectors. Instead, do one of these on the create page:
 | Queue stops after 1 listing | Fill-only mode pauses after each fill by design. Turn on Auto-publish in Settings for continuous runs. |
 | Script asks about a host on first photo download | Tampermonkey `@connect *` covers image hosts; allow the request if Tampermonkey prompts. |
 
-## What was tested (Nov 12, 2026)
+## What was tested (Nov 14, 2026)
 
-- `node --check` — syntax OK (1,677 lines, ~87 KB).
-- Logic harness (19 checks, all pass): 10 seed listings, 40 services,
-  7 cities, 26 FB categories + 4 conditions, dropdown option builder
-  (blank first, custom value preserved), spintax variation, token
-  replacement, price within range and rounded to $5,
-  used-combination avoidance, safe defaults (auto-publish OFF,
-  interval 180–300s), plus photo-resolution soft failure without
-  IndexedDB (empty result, no throw).
+- `node --check` — syntax OK (1,776 lines, ~93 KB).
+- Logic harness (21 checks, all pass): 10 seed listings, 40 services,
+  7 cities, 26 FB categories + 4 conditions + 2 availability options,
+  dropdown option builder (blank first, custom value preserved),
+  spintax variation, token replacement, price within range and
+  rounded to $5, used-combination avoidance, safe defaults
+  (auto-publish OFF, interval 180–300s; tags + availability blank),
+  plus photo-resolution soft failure without IndexedDB (empty result,
+  no throw).
 - Fake-IndexedDB harness (7 checks, all pass): store 2 photos, non-image
   filtered out, read-back with names, resolve to File objects with
   names/types preserved.
@@ -202,30 +211,37 @@ selectors. Instead, do one of these on the create page:
   the full pointer/mouse sequence, second row untouched, listbox
   closes, input value becomes the selected place; no-listbox case
   falls back to ArrowDown + Enter.
-- Dropdown harness (11 checks, all pass, fake DOM built from the live
+- Dropdown harness (16 checks, all pass, fake DOM built from the live
   combobox/dialog HTML): combobox found via aria-labelledby; "Household"
   matched by its first name span despite the "Shipping available"
   subtitle; header rows never clicked; missing option logs the full
-  available list; already-selected value skips clicking. Harnesses
-  live in `tests/` locally (not shipped in the repo); the panel-smoke
-  and fake-IndexedDB harnesses below passed on code unchanged since
+  available list; already-selected value skips clicking; Availability
+  (role="option" rows in a role-less popover, title + description
+  spans) selects "List as In Stock", skips clicking when already set,
+  and logs the real option names on a miss. Harnesses live in `tests/`
+  locally (not shipped in the repo); the panel-smoke and
+  fake-IndexedDB harnesses below passed on code unchanged since
   their last run.
+- Tags harness (8 checks, all pass, fake DOM built from the live
+  Product-tags HTML): bare textarea found via its wrapping "Product
+  tags" label; 3 comma-separated tags (one with a {city} token)
+  become 3 chips; blank tags are a no-op; empty entries skipped;
+  Enter-not-committing returns false, warns, and clears the box.
 - Panel smoke test (fake DOM): script boots without errors, listings
   render with names, NO PHOTOS badges, uploaded/link counts and queue
   button after the async photo-count refresh.
 - **Live:** v1.1.0 first live test Nov 12 FAILED on fields (Description
   not found, Title/Price empty; photo preview did appear, suggesting
-  attach worked). Nov 14: category still not selecting (cause
-  unverified — blank category skipping silently is one candidate;
-  v1.1.4 makes the skip visible). v1.1.1–v1.1.4 fixes are
-  harness-tested only — live re-verification of fill, location
-  selection, category selection, attach, Publish and Renew is still
-  open (Step 3 above, or a live browser session on the test account).
-  Condition option names are the standard Facebook names, unverified
-  live. Photo copy/delete on Duplicate/Delete share the tested
-  IndexedDB patterns but were not individually harness-tested.
+  attach worked). Nov 14: Category selection CONFIRMED WORKING.
+  Product tags + Availability (v1.1.5) are harness-tested only — live
+  verification of tags, availability, location selection, attach,
+  Publish and Renew is still open (Step 3 above, or a live browser
+  session on the test account). Condition option names are the
+  standard Facebook names, unverified live. Photo copy/delete on
+  Duplicate/Delete share the tested IndexedDB patterns but were not
+  individually harness-tested.
 
 ## Files
 
-- `locksmith-marketplace-poster.user.js` — the script (v1.1.4).
+- `locksmith-marketplace-poster.user.js` — the script (v1.1.5).
 - `README.md` — this file.
